@@ -23,7 +23,7 @@ class TrafficVpnService : VpnService() {
         const val ACTION_START = "com.mitm.shadowtrack.START_VPN"
         const val ACTION_STOP  = "com.mitm.shadowtrack.STOP_VPN"
         const val TARGET_PACKAGE = "com.nekki.shadowfight3"
-        const val CHANNEL_ID = "shadowtrack_vpn"
+        const val CHANNEL_ID = "hammerscale_vpn"
         const val NOTIF_ID = 1001
         const val VPN_ADDRESS = "10.0.0.1"
         const val VPN_ROUTE   = "0.0.0.0"
@@ -56,7 +56,7 @@ class TrafficVpnService : VpnService() {
     private fun startVpn() {
         try {
             val builder = Builder()
-                .setSession("ShadowTrack")
+                .setSession("HAMMERSCALE")
                 .addAddress(VPN_ADDRESS, 24)
                 .addRoute(VPN_ROUTE, 0)
                 .addDnsServer("8.8.8.8")
@@ -174,7 +174,7 @@ class TrafficVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "ShadowTrack VPN",
+                "HAMMERSCALE VPN",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Traffic monitoring VPN"
@@ -199,7 +199,7 @@ class TrafficVpnService : VpnService() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("ShadowTrack Active")
+            .setContentTitle("HAMMERSCALE Active")
             .setContentText("Monitoring: $TARGET_PACKAGE")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(openIntent)

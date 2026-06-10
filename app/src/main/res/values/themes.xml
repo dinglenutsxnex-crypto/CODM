@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.ShadowTrack" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+    <style name="Theme.HammerScale" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
         <item name="colorPrimary">@color/bg_secondary</item>
         <item name="colorPrimaryVariant">@color/bg_primary</item>
         <item name="colorOnPrimary">@color/text_primary</item>

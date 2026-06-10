@@ -16,24 +16,27 @@ sealed class GameEvent {
     data class Command(val name: String, val isOutbound: Boolean) : GameEvent()
     data class BattleCommand(val name: String, val battleId: String?, val isOutbound: Boolean) : GameEvent()
     data class BattleStarted(val battleId: String) : GameEvent()
+    data class WinConfirmed(val battleId: String) : GameEvent()
 
     val label: String get() = when (this) {
-        is HandshakeOut  -> "🤝 HANDSHAKE → ${serverName}"
-        is HandshakeIn   -> "🔑 TOKEN: ${sessionToken.take(20)}…"
-        is LoginOut      -> "🔐 LOGIN"
-        is LoginIn       -> "✅ LOGIN OK"
-        is Command       -> "${if (isOutbound) "▲" else "▼"} ${name}"
-        is BattleCommand -> "${if (isOutbound) "▲" else "▼"} ${name}${if (battleId != null) " #$battleId" else ""}"
-        is BattleStarted -> "⚔ BATTLE STARTED #${battleId}"
+        is HandshakeOut  -> ">> HANDSHAKE  ${serverName}"
+        is HandshakeIn   -> ">> TOKEN  ${sessionToken.take(20)}..."
+        is LoginOut      -> ">> LOGIN"
+        is LoginIn       -> "<< LOGIN OK"
+        is Command       -> "${if (isOutbound) ">>" else "<<"} ${name}"
+        is BattleCommand -> "${if (isOutbound) ">>" else "<<"} ${name}${if (battleId != null) "  #$battleId" else ""}"
+        is BattleStarted -> "!! BATTLE STARTED  #${battleId}"
+        is WinConfirmed  -> "## WIN CONFIRMED  #${battleId}"
     }
 
     val detail: String get() = when (this) {
         is HandshakeOut  -> ""
         is HandshakeIn   -> ""
-        is LoginOut      -> "guid: ${guid.take(18)}…\npass: ${password}"
+        is LoginOut      -> "guid: ${guid.take(18)}...\npass: ${password}"
         is LoginIn       -> ""
         is Command       -> ""
         is BattleCommand -> if (battleId != null) "battle: $battleId" else ""
         is BattleStarted -> "battle_id: ${battleId}"
+        is WinConfirmed  -> "battle_id: ${battleId}  /  server confirmed"
     }
 }

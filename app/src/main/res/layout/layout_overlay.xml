@@ -23,7 +23,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="⚔  SHADOWTRACK"
+            android:text="HAMMERSCALE"
             android:textColor="#FF58A6FF"
             android:textSize="13sp"
             android:textStyle="bold"
@@ -48,9 +48,10 @@
             android:id="@+id/btn_menu"
             android:layout_width="40dp"
             android:layout_height="52dp"
-            android:text="⋮"
+            android:text="..."
             android:textColor="#FF8B949E"
-            android:textSize="20sp"
+            android:textSize="16sp"
+            android:textStyle="bold"
             android:gravity="center"
             android:clickable="true"
             android:focusable="true" />
@@ -81,7 +82,7 @@
             android:id="@+id/menu_clear"
             android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:text="   🗑  Clear logs"
+            android:text="   CLEAR LOGS"
             android:textColor="#FFE6EDF3"
             android:textSize="13sp"
             android:fontFamily="monospace"
@@ -99,7 +100,7 @@
             android:id="@+id/menu_download"
             android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:text="   📥  Download logs (.zip)"
+            android:text="   DOWNLOAD LOGS (.zip)"
             android:textColor="#FFE6EDF3"
             android:textSize="13sp"
             android:fontFamily="monospace"
@@ -170,23 +171,14 @@
         android:padding="20dp"
         android:visibility="gone">
 
-        <!-- Battle state icon + label -->
-        <TextView
-            android:id="@+id/tv_battle_icon"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="🎮"
-            android:textSize="36sp"
-            android:gravity="center"
-            android:layout_marginBottom="8dp" />
-
         <TextView
             android:id="@+id/tv_battle_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="No active battle"
+            android:text="NO ACTIVE BATTLE"
             android:textColor="#FF8B949E"
-            android:textSize="13sp"
+            android:textSize="14sp"
+            android:textStyle="bold"
             android:fontFamily="monospace"
             android:gravity="center"
             android:layout_marginBottom="6dp" />
@@ -203,12 +195,11 @@
             android:layout_marginBottom="20dp"
             android:visibility="gone" />
 
-        <!-- Win Battle button -->
         <TextView
             android:id="@+id/btn_win_battle"
             android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:text="⚔  WIN BATTLE"
+            android:text="WIN BATTLE"
             android:textColor="#FF0D1117"
             android:textSize="14sp"
             android:textStyle="bold"

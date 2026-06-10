@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">ShadowTrack</string>
+    <string name="app_name">HAMMERSCALE</string>
     <string name="vpn_start">Start Monitoring</string>
     <string name="vpn_stop">Stop Monitoring</string>
-    <string name="status_idle">○ IDLE — Tap ▶ to start monitoring</string>
+    <string name="status_idle">○ IDLE — Tap to start monitoring</string>
     <string name="status_live">● LIVE — Monitoring Shadow Fight 3</string>
     <string name="no_connections">No connections yet</string>
     <string name="clear_all">Clear All</string>

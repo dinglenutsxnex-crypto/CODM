@@ -105,6 +105,9 @@ class ConnectionViewModel : ViewModel() {
                                 _currentBattle.postValue(BattleState(event.battleId))
                             }
                         }
+                        is GameEvent.WinConfirmed -> {
+                            _currentBattle.postValue(null)
+                        }
                         is GameEvent.BattleCommand -> {
                             if (event.name == "finish_fight" || event.name == "brawler_finish") {
                                 _currentBattle.postValue(null)
@@ -153,6 +156,9 @@ class ConnectionViewModel : ViewModel() {
         when (event) {
             is GameEvent.BattleStarted -> {
                 if (event.battleId != "?") _currentBattle.postValue(BattleState(event.battleId))
+            }
+            is GameEvent.WinConfirmed -> {
+                _currentBattle.postValue(null)
             }
             is GameEvent.BattleCommand -> {
                 if (event.name == "finish_fight" || event.name == "brawler_finish") {

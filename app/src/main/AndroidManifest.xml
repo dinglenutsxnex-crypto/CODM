@@ -15,7 +15,7 @@
         android:icon="@drawable/ic_launcher_fg"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.ShadowTrack">
+        android:theme="@style/Theme.HammerScale">
 
         <activity
             android:name=".MainActivity"

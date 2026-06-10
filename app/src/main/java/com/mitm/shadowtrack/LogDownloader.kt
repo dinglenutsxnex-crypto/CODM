@@ -39,7 +39,7 @@ object LogDownloader {
             // ── Build zip ─────────────────────────────────────────────
             val logsDir = File(context.cacheDir, "logs").also { it.mkdirs() }
             val ts = System.currentTimeMillis()
-            val zipFile = File(logsDir, "shadowtrack_$ts.zip")
+            val zipFile = File(logsDir, "hammerscale_$ts.zip")
 
             var userIdx   = 0
             var serverIdx = 0
@@ -72,7 +72,7 @@ object LogDownloader {
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "application/zip"
                 putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "ShadowTrack logs")
+                putExtra(Intent.EXTRA_SUBJECT, "HAMMERSCALE logs")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }

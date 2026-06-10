@@ -19,7 +19,7 @@
             android:layout_height="?attr/actionBarSize"
             android:background="@color/bg_secondary"
             app:titleTextColor="@color/text_primary"
-            app:title="ShadowTrack" />
+            app:title="HAMMERSCALE" />
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -64,8 +64,12 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="📡"
-            android:textSize="56sp" />
+            android:text="[ HAMMERSCALE ]"
+            android:textColor="@color/text_secondary"
+            android:textSize="18sp"
+            android:fontFamily="monospace"
+            android:textStyle="bold"
+            android:letterSpacing="0.15" />
 
         <TextView
             android:id="@+id/tv_waiting_title"

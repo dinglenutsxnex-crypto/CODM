@@ -32,6 +32,7 @@ class OverlayService : Service() {
     private var savedY: Int = 120
 
     private var currentBattleId: String? = null
+    private var lastWinConfirmedId: String? = null
 
     // ── Event log observer ────────────────────────────────────────────────
 
@@ -61,6 +62,16 @@ class OverlayService : Service() {
         updateEventsPanel()
     }
 
+    // ── Win confirmation observer (via event stream) ──────────────────────
+
+    private val winObserver = Observer<List<GameEvent>> { list ->
+        val last = list.lastOrNull()
+        if (last is GameEvent.WinConfirmed) {
+            lastWinConfirmedId = last.battleId
+            updateEventsPanel()
+        }
+    }
+
     private fun isAtBottom(rv: RecyclerView): Boolean {
         val lm = rv.layoutManager as? LinearLayoutManager ?: return true
         val last = lm.findLastVisibleItemPosition()
@@ -71,28 +82,40 @@ class OverlayService : Service() {
 
     private fun updateEventsPanel() {
         val v = overlayView ?: return
-        val statusTv   = v.findViewById<TextView>(R.id.tv_battle_status)  ?: return
-        val idTv       = v.findViewById<TextView>(R.id.tv_battle_id)      ?: return
-        val iconTv     = v.findViewById<TextView>(R.id.tv_battle_icon)    ?: return
-        val winBtn     = v.findViewById<TextView>(R.id.btn_win_battle)    ?: return
-        val winStatus  = v.findViewById<TextView>(R.id.tv_win_status)     ?: return
+        val statusTv  = v.findViewById<TextView>(R.id.tv_battle_status) ?: return
+        val idTv      = v.findViewById<TextView>(R.id.tv_battle_id)     ?: return
+        val winBtn    = v.findViewById<TextView>(R.id.btn_win_battle)   ?: return
+        val winStatus = v.findViewById<TextView>(R.id.tv_win_status)    ?: return
 
         val id = currentBattleId
-        if (id != null) {
-            iconTv.text = "⚔️"
-            statusTv.text = "Battle active"
-            statusTv.setTextColor(Color.parseColor("#FF3FB950"))
-            idTv.text = "battle_id: $id"
-            idTv.visibility = View.VISIBLE
-            winBtn.visibility = View.VISIBLE
-            winStatus.visibility = View.GONE
-        } else {
-            iconTv.text = "🎮"
-            statusTv.text = "No active battle"
-            statusTv.setTextColor(Color.parseColor("#FF8B949E"))
-            idTv.visibility = View.GONE
-            winBtn.visibility = View.GONE
-            winStatus.visibility = View.GONE
+        when {
+            id != null -> {
+                // Active battle waiting for a win injection
+                statusTv.text = "BATTLE ACTIVE"
+                statusTv.setTextColor(Color.parseColor("#FF3FB950"))
+                idTv.text = "battle_id: $id"
+                idTv.visibility = View.VISIBLE
+                winBtn.visibility = View.VISIBLE
+                // Reset any old win-status text when a new battle starts
+                winStatus.visibility = View.GONE
+                lastWinConfirmedId = null
+            }
+            lastWinConfirmedId != null -> {
+                // Server confirmed the win
+                statusTv.text = "WIN CONFIRMED"
+                statusTv.setTextColor(Color.parseColor("#FF3FB950"))
+                idTv.text = "battle_id: $lastWinConfirmedId  /  server ACK"
+                idTv.visibility = View.VISIBLE
+                winBtn.visibility = View.GONE
+                winStatus.visibility = View.GONE
+            }
+            else -> {
+                statusTv.text = "NO ACTIVE BATTLE"
+                statusTv.setTextColor(Color.parseColor("#FF8B949E"))
+                idTv.visibility = View.GONE
+                winBtn.visibility = View.GONE
+                winStatus.visibility = View.GONE
+            }
         }
     }
 
@@ -111,6 +134,7 @@ class OverlayService : Service() {
         adapter = GameEventAdapter(events)
         setupOverlay()
         AppState.viewModel.gameEvents.observeForever(eventObserver)
+        AppState.viewModel.gameEvents.observeForever(winObserver)
         AppState.viewModel.currentBattle.observeForever(battleObserver)
     }
 
@@ -324,6 +348,7 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         AppState.viewModel.gameEvents.removeObserver(eventObserver)
+        AppState.viewModel.gameEvents.removeObserver(winObserver)
         AppState.viewModel.currentBattle.removeObserver(battleObserver)
         removeOverlay()
         removeMini()
@@ -357,6 +382,7 @@ class GameEventAdapter(private val items: List<GameEvent>) :
             is GameEvent.LoginOut      -> "#F0883E"
             is GameEvent.LoginIn       -> "#3FB950"
             is GameEvent.BattleStarted -> "#FF4444"
+            is GameEvent.WinConfirmed  -> "#3FB950"
             is GameEvent.BattleCommand -> "#D29922"
             else                       -> "#444C56"
         }

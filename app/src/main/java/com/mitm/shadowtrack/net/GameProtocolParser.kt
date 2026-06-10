@@ -132,6 +132,12 @@ object GameProtocolParser {
                 GameEvent.BattleStarted(battleId)
             }
 
+            command == "finish_fight" && !isOut -> {
+                // Server confirming the fight is finished = win confirmed
+                val battleId = params?.let { extractBattleId(it) }
+                GameEvent.WinConfirmed(battleId ?: "?")
+            }
+
             command in BATTLE_COMMANDS -> {
                 val battleId = params?.let { extractBattleId(it) }
                 GameEvent.BattleCommand(command, battleId, isOut)
