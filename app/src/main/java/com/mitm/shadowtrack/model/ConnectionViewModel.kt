@@ -25,6 +25,11 @@ class ConnectionViewModel : ViewModel() {
     private val _gameSocketId = MutableLiveData<String?>(null)
     val gameSocketId: LiveData<String?> = _gameSocketId
 
+    // Tracks which connection carried the most recent battle-start packet.
+    // May differ from gameSocketId (HANDSHAKE conn) if SF3 uses separate connections.
+    private val _battleSocketId = MutableLiveData<String?>(null)
+    val battleSocketId: LiveData<String?> = _battleSocketId
+
     private val _gameEvents = MutableLiveData<List<GameEvent>>(emptyList())
     val gameEvents: LiveData<List<GameEvent>> = _gameEvents
     private val gameEventList = mutableListOf<GameEvent>()
@@ -106,6 +111,9 @@ class ConnectionViewModel : ViewModel() {
                             // from overwriting the correct battle counter we already captured.
                             if (event.battleId != "?" && _currentBattle.value == null) {
                                 _currentBattle.postValue(BattleState(event.battleId))
+                                // Record WHICH connection carried this battle packet — may differ
+                                // from gameSocketId (the HANDSHAKE conn) if SF3 uses separate conns.
+                                _battleSocketId.postValue(id)
                             }
                         }
                         is GameEvent.WinConfirmed -> {
@@ -135,6 +143,7 @@ class ConnectionViewModel : ViewModel() {
     fun clearAll() {
         connectionMap.clear()
         _gameSocketId.postValue(null)
+        _battleSocketId.postValue(null)
         synchronized(gameEventList) { gameEventList.clear() }
         _gameEvents.postValue(emptyList())
         _currentBattle.postValue(null)

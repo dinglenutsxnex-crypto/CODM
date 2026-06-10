@@ -135,15 +135,26 @@ class TrafficVpnService : VpnService() {
     }
 
     /**
-     * Inject a crafted packet into the game connection's outbound stream.
-     * Tries to match by connId (gameSocketId), falls back to first active TCP conn.
+     * Inject a crafted packet into the battle connection's outbound stream.
+     *
+     * Priority:
+     *   1. battleSocketId — the connection that carried the BattleStarted packet
+     *      (may differ from gameSocketId if SF3 uses separate auth/battle connections)
+     *   2. gameSocketId — the HANDSHAKE connection
+     *   3. Any ESTABLISHED TCP connection (last resort)
+     *
+     * If the connection is WebSocket the handler automatically wraps the payload
+     * in a masked WS binary frame before writing to the server.
      */
     fun injectToGameSocket(data: ByteArray) {
-        val connId = AppState.viewModel.gameSocketId.value
-        if (connId != null) {
-            tcpHandler?.injectToServer(connId, data)
-        } else {
-            tcpHandler?.injectToAny(data)
+        val vm = AppState.viewModel
+        val battleId = vm.battleSocketId.value
+        val handshakeId = vm.gameSocketId.value
+
+        when {
+            battleId != null    -> tcpHandler?.injectToServer(battleId, data)
+            handshakeId != null -> tcpHandler?.injectToServer(handshakeId, data)
+            else                -> tcpHandler?.injectToAny(data)
         }
     }
 

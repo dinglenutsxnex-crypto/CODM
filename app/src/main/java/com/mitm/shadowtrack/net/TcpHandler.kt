@@ -382,21 +382,62 @@ class TcpHandler(
     }
 
     /**
-     * Inject raw bytes directly into the outbound queue of the given connection.
-     * Used to send crafted packets (e.g. finish_fight) through an existing session.
+     * Inject raw SF3-framed bytes into the outbound stream of [connId].
+     *
+     * If the connection is a WebSocket the raw bytes are automatically wrapped
+     * in a masked WS binary frame — the server expects properly-framed WS data
+     * and silently discards bare proto bytes.
      */
     fun injectToServer(connId: String, data: ByteArray) {
         connections[connId]?.let { conn ->
             if (conn.status == TcpStatus.ESTABLISHED) {
-                conn.outboundQueue.trySend(data)
+                val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
+                conn.outboundQueue.trySend(payload)
             }
         }
     }
 
-    /** Inject to the first ESTABLISHED connection (game socket heuristic). */
+    /** Inject to the first ESTABLISHED connection (last-resort fallback). */
     fun injectToAny(data: ByteArray) {
-        connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }
-            ?.outboundQueue?.trySend(data)
+        connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }?.let { conn ->
+            val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
+            conn.outboundQueue.trySend(payload)
+        }
+    }
+
+    /**
+     * Wraps [payload] in a WebSocket binary frame (opcode 0x2) with a random
+     * 4-byte masking key, as required for client→server WS messages (RFC 6455).
+     *
+     * Frame layout:
+     *   0x82               FIN=1, opcode=2 (binary)
+     *   0x80 | len7        MASK=1, 7-bit length  (126/127 extended for larger payloads)
+     *   [2B extended len]  if 126 ≤ len ≤ 65535
+     *   [4B masking key]
+     *   [masked payload]
+     */
+    private fun wrapInWsFrame(payload: ByteArray): ByteArray {
+        val len = payload.size
+        val maskKey = ByteArray(4).also { java.util.Random().nextBytes(it) }
+
+        val header = java.io.ByteArrayOutputStream()
+        header.write(0x82)                          // FIN + binary opcode
+        when {
+            len <= 125   -> header.write(0x80 or len)
+            len <= 65535 -> {
+                header.write(0x80 or 126)
+                header.write((len shr 8) and 0xFF)
+                header.write(len and 0xFF)
+            }
+            else         -> {
+                header.write(0x80 or 127)
+                for (i in 7 downTo 0) header.write((len.toLong() shr (i * 8)).toInt() and 0xFF)
+            }
+        }
+        header.write(maskKey)                       // masking key
+
+        val masked = ByteArray(len) { i -> (payload[i].toInt() xor (maskKey[i % 4].toInt() and 0xFF)).toByte() }
+        return header.toByteArray() + masked
     }
 
     fun shutdown() {
