@@ -142,6 +142,27 @@ class ConnectionViewModel : ViewModel() {
         return synchronized(conn.messages) { conn.messages.toList() }
     }
 
+    /** Inject a synthetic event directly (e.g. locally-injected finish_fight). */
+    fun emitEvent(event: GameEvent) {
+        synchronized(gameEventList) {
+            gameEventList.add(event)
+            if (gameEventList.size > 200) gameEventList.removeAt(0)
+        }
+        _gameEvents.postValue(gameEventList.toList())
+
+        when (event) {
+            is GameEvent.BattleStarted -> {
+                if (event.battleId != "?") _currentBattle.postValue(BattleState(event.battleId))
+            }
+            is GameEvent.BattleCommand -> {
+                if (event.name == "finish_fight" || event.name == "brawler_finish") {
+                    _currentBattle.postValue(null)
+                }
+            }
+            else -> {}
+        }
+    }
+
     private fun publishUpdate() {
         val list = connectionMap.values.sortedByDescending { it.lastActivityTime }
         _connections.postValue(list)

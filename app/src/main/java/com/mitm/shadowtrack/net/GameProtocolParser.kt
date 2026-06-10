@@ -68,11 +68,10 @@ object GameProtocolParser {
      * Prioritises longer runs first (more digits = less likely to be a flag/enum).
      */
     private fun extractIdFromRawText(text: String): String? {
-        val candidates = Regex("[0-9]{5,12}").findAll(text)
+        // Only accept 5-10 digit sequences; reject timestamps (13 digits, ~1.78T in 2026)
+        return Regex("[0-9]{5,10}").findAll(text)
             .map { it.value }
-            .filter { it.toLongOrNull()?.let { v -> v > 10_000L } == true }
-            .sortedByDescending { it.length }
-        return candidates.firstOrNull()
+            .firstOrNull { it.toLongOrNull()?.let { v -> v in 10_000L..9_999_999_999L } == true }
     }
 
     // ── Framing ───────────────────────────────────────────────────────────
@@ -181,19 +180,21 @@ object GameProtocolParser {
         if (depth > 4) return null
         return try {
             val fields = readProtoFields(data)
-            // Collect all candidate integers first, prefer longer ones
+            // Collect candidates, rejecting timestamps (>=10^12 = ms-epoch in 2026)
+            // and tiny flags/enums (<10_000). Prefer first match over largest.
             val candidates = mutableListOf<Long>()
             for ((_, v) in fields) {
                 when (v) {
                     is Long -> {
-                        // Accept any plausible positive integer that isn't a tiny flag/enum
-                        if (v > 10_000L) candidates.add(v)
+                        // Game IDs are plausibly 5-10 digits; timestamps are 13+ digits
+                        if (v in 10_000L..9_999_999_999L) candidates.add(v)
                     }
                     is ByteArray -> {
-                        // Check if it's a pure digit string
+                        // Pure digit string field
                         val s = v.toString(Charsets.UTF_8)
-                        if (s.isNotEmpty() && s.all { it.isDigit() } && s.length in 5..12) {
-                            return s
+                        if (s.isNotEmpty() && s.all { it.isDigit() } && s.length in 5..10) {
+                            val n = s.toLongOrNull()
+                            if (n != null && n in 10_000L..9_999_999_999L) return s
                         }
                         // Recurse into nested proto
                         val nested = extractIdFromProto(v, depth + 1)
@@ -201,7 +202,8 @@ object GameProtocolParser {
                     }
                 }
             }
-            candidates.maxOrNull()?.toString()
+            // Prefer first (lowest field number = most likely primary ID)
+            candidates.firstOrNull()?.toString()
         } catch (_: Exception) { null }
     }
 
