@@ -155,11 +155,14 @@ class ConnectionViewModel : ViewModel() {
                             }
                         }
                         is GameEvent.WinConfirmed -> {
-                            // Only clear the active battle if the confirmed ID matches what
-                            // we're tracking. Prevents a background clan-fight WinConfirmed
-                            // from wiping the state for the hero fight we actually want to win.
+                            // "?" = wildcard emitted for event_battle_finish_fight server ACK —
+                            // the server sends its own sequential fight counter in field[1] (e.g.
+                            // 61028), not the client's template battle ID (e.g. 3001602). The
+                            // parser uses "?" to mean "clear unconditionally". For other commands
+                            // (finish_fight clan fights) the server echoes the client ID, so the
+                            // ID check still guards hero fights from being wiped by clan wins.
                             val tracked = _currentBattle.value?.battleId
-                            if (tracked == null || tracked == event.battleId) {
+                            if (tracked == null || event.battleId == "?" || tracked == event.battleId) {
                                 _currentBattle.postValue(null)
                             }
                         }
@@ -221,7 +224,7 @@ class ConnectionViewModel : ViewModel() {
             }
             is GameEvent.WinConfirmed -> {
                 val tracked = _currentBattle.value?.battleId
-                if (tracked == null || tracked == event.battleId) {
+                if (tracked == null || event.battleId == "?" || tracked == event.battleId) {
                     _currentBattle.postValue(null)
                 }
             }

@@ -188,8 +188,16 @@ object GameProtocolParser {
             }
 
             command in BATTLE_END_COMMANDS && !isOut -> {
-                // Server confirmed the battle ended
-                val battleId = params?.let { extractBattleIdDirect(it) }
+                // Server confirmed the battle ended.
+                // IMPORTANT: for event_battle_finish_fight the server's params.field[1] is
+                // its own sequential fight counter (e.g. 61028), NOT the client's battle
+                // template ID (e.g. 3001602). Reading it with extractBattleIdDirect would
+                // produce a WinConfirmed ID that never matches currentBattle → stuck state.
+                // Use "?" (wildcard) for hero-fight confirmations so the ViewModel always
+                // clears regardless of ID. For other end commands (finish_fight clan etc.)
+                // the server does echo back the client's battle ID in field[1], so match normally.
+                val battleId = if (command == "event_battle_finish_fight") null
+                               else params?.let { extractBattleIdDirect(it) }
                 GameEvent.WinConfirmed(battleId ?: "?")
             }
 
