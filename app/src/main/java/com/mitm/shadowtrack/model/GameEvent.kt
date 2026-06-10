@@ -15,6 +15,7 @@ sealed class GameEvent {
     class LoginIn : GameEvent()
     data class Command(val name: String, val isOutbound: Boolean) : GameEvent()
     data class BattleCommand(val name: String, val battleId: String?, val isOutbound: Boolean) : GameEvent()
+    data class BattleStarted(val battleId: String) : GameEvent()
 
     val label: String get() = when (this) {
         is HandshakeOut  -> "🤝 HANDSHAKE → ${serverName}"
@@ -23,6 +24,7 @@ sealed class GameEvent {
         is LoginIn       -> "✅ LOGIN OK"
         is Command       -> "${if (isOutbound) "▲" else "▼"} ${name}"
         is BattleCommand -> "${if (isOutbound) "▲" else "▼"} ${name}${if (battleId != null) " #$battleId" else ""}"
+        is BattleStarted -> "⚔ BATTLE STARTED #${battleId}"
     }
 
     val detail: String get() = when (this) {
@@ -32,5 +34,6 @@ sealed class GameEvent {
         is LoginIn       -> ""
         is Command       -> ""
         is BattleCommand -> if (battleId != null) "battle: $battleId" else ""
+        is BattleStarted -> "battle_id: ${battleId}"
     }
 }

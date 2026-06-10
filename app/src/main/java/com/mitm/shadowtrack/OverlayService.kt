@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.IBinder
+import android.util.TypedValue
 import android.view.*
 import android.widget.TextView
 import androidx.lifecycle.Observer
@@ -26,20 +27,33 @@ class OverlayService : Service() {
     private val events = mutableListOf<GameEvent>()
     private lateinit var adapter: GameEventAdapter
 
+    private var savedX: Int = 0
+    private var savedY: Int = 120
+
     private val eventObserver = Observer<List<GameEvent>> { newList ->
         val prevSize = events.size
         val added = newList.drop(prevSize)
         if (added.isNotEmpty()) {
             events.addAll(added)
             adapter.notifyItemRangeInserted(prevSize, added.size)
-            overlayView?.findViewById<RecyclerView>(R.id.rv_events)
-                ?.scrollToPosition(events.size - 1)
-            // Update count badges
+
+            val rv = overlayView?.findViewById<RecyclerView>(R.id.rv_events)
+            if (rv != null && isAtBottom(rv)) {
+                rv.scrollToPosition(events.size - 1)
+            }
+
             overlayView?.findViewById<TextView>(R.id.tv_event_count)?.text = events.size.toString()
             overlayView?.findViewById<TextView>(R.id.tv_status_bar)?.text =
                 "${events.size} events  ·  last: ${events.last().timeStr}"
             miniView?.findViewById<TextView>(R.id.tv_mini_count)?.text = "${events.size}"
         }
+    }
+
+    private fun isAtBottom(rv: RecyclerView): Boolean {
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return true
+        val last = lm.findLastVisibleItemPosition()
+        val total = adapter.itemCount
+        return last >= total - 2
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -59,9 +73,12 @@ class OverlayService : Service() {
 
     // ── WindowManager params ──────────────────────────────────────────────
 
-    private fun makeParams(w: Int = WindowManager.LayoutParams.WRAP_CONTENT,
+    private fun dp(value: Float): Int =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
+
+    private fun makeParams(w: Int = dp(360f),
                            h: Int = WindowManager.LayoutParams.WRAP_CONTENT,
-                           x: Int = 0, y: Int = 120) =
+                           x: Int = savedX, y: Int = savedY) =
         WindowManager.LayoutParams(
             w, h,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -78,8 +95,8 @@ class OverlayService : Service() {
         val view = LayoutInflater.from(this).inflate(R.layout.layout_overlay, null)
         overlayView = view
 
-        // RecyclerView
-        view.findViewById<RecyclerView>(R.id.rv_events).apply {
+        val rv = view.findViewById<RecyclerView>(R.id.rv_events)
+        rv.apply {
             layoutManager = LinearLayoutManager(this@OverlayService).also { it.stackFromEnd = true }
             adapter = this@OverlayService.adapter
         }
@@ -87,19 +104,16 @@ class OverlayService : Service() {
         val params = makeParams()
         attachDrag(view.findViewById(R.id.overlay_header), view, params)
 
-        // Minimize
         view.findViewById<TextView>(R.id.btn_minimize).setOnClickListener {
             removeOverlay(); showMini()
         }
 
-        // Triple-dot — toggle the drop-down panel
         val menuPanel = view.findViewById<View>(R.id.panel_menu)
         view.findViewById<TextView>(R.id.btn_menu).setOnClickListener {
             menuPanel.visibility =
                 if (menuPanel.visibility == View.GONE) View.VISIBLE else View.GONE
         }
 
-        // Clear logs
         view.findViewById<TextView>(R.id.menu_clear).setOnClickListener {
             val sz = events.size
             events.clear()
@@ -109,7 +123,6 @@ class OverlayService : Service() {
             menuPanel.visibility = View.GONE
         }
 
-        // Download logs
         view.findViewById<TextView>(R.id.menu_download).setOnClickListener {
             menuPanel.visibility = View.GONE
             val id = AppState.viewModel.gameSocketId.value
@@ -133,12 +146,8 @@ class OverlayService : Service() {
         view.findViewById<TextView>(R.id.tv_mini_count)?.text =
             if (events.isEmpty()) "SF3" else "${events.size}"
 
-        val params = makeParams()
+        val params = makeParams(w = dp(80f), h = dp(80f))
 
-        // Mini needs its own touch handler that also fires "expand" on tap.
-        // We can't use attachDrag() + setOnClickListener() because ACTION_DOWN
-        // returning true prevents View.onTouchEvent() from registering the DOWN,
-        // so click listeners never fire. Handle everything here instead.
         var startX = 0; var startY = 0
         var rawX = 0f; var rawY = 0f
         var dragged = false
@@ -158,6 +167,8 @@ class OverlayService : Service() {
                     if (dragged) {
                         params.x = (startX + dx).coerceAtLeast(0)
                         params.y = (startY + dy).coerceAtLeast(0)
+                        savedX = params.x
+                        savedY = params.y
                         try { windowManager.updateViewLayout(view, params) } catch (_: Exception) {}
                     }
                     true
@@ -180,10 +191,6 @@ class OverlayService : Service() {
 
     // ── Drag ─────────────────────────────────────────────────────────────
 
-    /**
-     * Attaches a drag gesture to [handle] that moves [root] in the WindowManager.
-     * KEY: must return true on ACTION_DOWN so the view claims the touch stream.
-     */
     private fun attachDrag(handle: View, root: View, params: WindowManager.LayoutParams) {
         var startX = 0; var startY = 0
         var rawX = 0f; var rawY = 0f
@@ -195,7 +202,7 @@ class OverlayService : Service() {
                     startX = params.x; startY = params.y
                     rawX = event.rawX; rawY = event.rawY
                     dragging = false
-                    true          // ← MUST be true to receive MOVE events
+                    true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (rawX - event.rawX).toInt()
@@ -204,12 +211,14 @@ class OverlayService : Service() {
                     if (dragging) {
                         params.x = (startX + dx).coerceAtLeast(0)
                         params.y = (startY + dy).coerceAtLeast(0)
+                        savedX = params.x
+                        savedY = params.y
                         try { windowManager.updateViewLayout(root, params) } catch (_: Exception) {}
                     }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    dragging  // consume if we actually dragged (prevents accidental clicks)
+                    dragging
                 }
                 else -> false
             }
@@ -248,11 +257,12 @@ class GameEventAdapter(private val items: List<GameEvent>) :
 
         val colorHex = when (ev) {
             is GameEvent.HandshakeOut,
-            is GameEvent.HandshakeIn  -> "#58A6FF"   // blue
-            is GameEvent.LoginOut     -> "#F0883E"   // orange
-            is GameEvent.LoginIn      -> "#3FB950"   // green
-            is GameEvent.BattleCommand -> "#D29922"  // yellow
-            else                       -> "#444C56"  // dim
+            is GameEvent.HandshakeIn  -> "#58A6FF"
+            is GameEvent.LoginOut     -> "#F0883E"
+            is GameEvent.LoginIn      -> "#3FB950"
+            is GameEvent.BattleStarted -> "#FF4444"
+            is GameEvent.BattleCommand -> "#D29922"
+            else                       -> "#444C56"
         }
         val color = Color.parseColor(colorHex)
 

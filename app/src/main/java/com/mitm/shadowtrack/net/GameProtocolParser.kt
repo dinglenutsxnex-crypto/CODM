@@ -88,6 +88,11 @@ object GameProtocolParser {
 
             command == "LOGIN" && !isOut -> GameEvent.LoginIn()
 
+            command == "start_fight" && isOut -> {
+                val battleId = params?.let { extractBattleId(it) } ?: "?"
+                GameEvent.BattleStarted(battleId)
+            }
+
             command in BATTLE_COMMANDS -> {
                 val battleId = params?.let { extractBattleId(it) }
                 GameEvent.BattleCommand(command, battleId, isOut)
