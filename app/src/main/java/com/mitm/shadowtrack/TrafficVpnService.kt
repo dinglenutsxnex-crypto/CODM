@@ -103,7 +103,7 @@ class TrafficVpnService : VpnService() {
         val input = FileInputStream(fd)
         val buf = ByteBuffer.allocate(32767)
 
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             try {
                 buf.clear()
                 val len = withContext(Dispatchers.IO) {
@@ -119,7 +119,7 @@ class TrafficVpnService : VpnService() {
                     PacketParser.PROTO_UDP -> udpHandler?.handlePacket(packet)
                 }
             } catch (e: Exception) {
-                if (!isActive) break
+                if (!currentCoroutineContext().isActive) break
                 delay(10)
             }
         }
