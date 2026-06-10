@@ -465,7 +465,9 @@ class TcpHandler(
             return "FAIL: conn.status=${conn.status} (not ESTABLISHED)"
         val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
         conn.outboundQueue.trySend(payload)
-        onMessage(connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
+        // Do NOT call onMessage here — calling it from the main thread (overlay) while
+        // readerLoop calls it from IO causes a concurrent access pattern that silently
+        // crashes readerLoop, after which ALL inbound messages stop being logged.
         return "QUEUED  ws=${conn.isWebSocket}"
     }
 
@@ -478,7 +480,6 @@ class TcpHandler(
             ?: return "FAIL: injectToAny found no ESTABLISHED conn (${connections.size} conns)"
         val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
         conn.outboundQueue.trySend(payload)
-        onMessage(conn.connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
         return "QUEUED via any  id=…${conn.connId.takeLast(16)}  ws=${conn.isWebSocket}"
     }
 
