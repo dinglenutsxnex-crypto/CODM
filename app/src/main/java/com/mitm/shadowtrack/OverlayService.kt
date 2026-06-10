@@ -229,24 +229,46 @@ class OverlayService : Service() {
 
         // ── Win Battle button ─────────────────────────────────────────────
         view.findViewById<TextView>(R.id.btn_win_battle).setOnClickListener {
-            val id = currentBattleId ?: return@setOnClickListener
-            val idLong = id.toLongOrNull() ?: return@setOnClickListener
             val winStatus = view.findViewById<TextView>(R.id.tv_win_status)
+            winStatus.visibility = View.VISIBLE
+
+            val id = currentBattleId
+            if (id == null) {
+                winStatus.text = "✗ FAIL: currentBattleId=null"
+                winStatus.setTextColor(Color.parseColor("#FFFF4444"))
+                return@setOnClickListener
+            }
+            val idLong = id.toLongOrNull()
+            if (idLong == null) {
+                winStatus.text = "✗ FAIL: id='$id' not a Long"
+                winStatus.setTextColor(Color.parseColor("#FFFF4444"))
+                return@setOnClickListener
+            }
+            val vpnInstance = TrafficVpnService.instance
+            if (vpnInstance == null) {
+                winStatus.text = "✗ FAIL: VPN instance=null"
+                winStatus.setTextColor(Color.parseColor("#FFFF4444"))
+                return@setOnClickListener
+            }
+            val vm = AppState.viewModel
+            val battleSock = vm.battleSocketId.value
+            val gameSock   = vm.gameSocketId.value
+            val socketInfo = "bSock=${battleSock?.takeLast(12) ?: "null"}  gSock=${gameSock?.takeLast(12) ?: "null"}"
             try {
-                val counter = AppState.viewModel.nextInjectCounter
-                val packet = com.mitm.shadowtrack.net.PacketInjector.buildFinishFight(idLong, counter)
-                TrafficVpnService.instance?.injectToGameSocket(packet)
-                // No synthetic emitEvent needed — injectToServer now calls onMessage()
-                // directly so the packet flows through addMessage() exactly like real
-                // traffic: it appears in conn.messages (visible in logs + battlem capture),
-                // _outboundCounter is updated, and GameProtocolParser fires the event.
-                winStatus.text = ">> event_battle_finish_fight injected  ctr=$counter"
-                winStatus.setTextColor(Color.parseColor("#FF3FB950"))
+                val counter = vm.nextInjectCounter
+                val packet  = com.mitm.shadowtrack.net.PacketInjector.buildFinishFight(idLong, counter)
+                val result  = vpnInstance.injectToGameSocketDiag(packet)
+                if (result == null) {
+                    winStatus.text = "✗ FAIL: injection returned null\n$socketInfo"
+                    winStatus.setTextColor(Color.parseColor("#FFFF4444"))
+                } else {
+                    winStatus.text = ">> injected  ctr=$counter\n$result"
+                    winStatus.setTextColor(Color.parseColor("#FF3FB950"))
+                }
             } catch (e: Exception) {
-                winStatus.text = "✗ ${e.message}"
+                winStatus.text = "✗ EXCEPTION: ${e.message}\n$socketInfo"
                 winStatus.setTextColor(Color.parseColor("#FFFF4444"))
             }
-            winStatus.visibility = View.VISIBLE
         }
 
         // Sync current battle state immediately

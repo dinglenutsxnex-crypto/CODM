@@ -454,29 +454,32 @@ class TcpHandler(
      * If the connection is a WebSocket the raw bytes are automatically wrapped
      * in a masked WS binary frame — the server expects properly-framed WS data
      * and silently discards bare proto bytes.
+     *
+     * Returns a diagnostic string describing the outcome, or null if the connId
+     * was not found or the connection was not ESTABLISHED.
      */
-    fun injectToServer(connId: String, data: ByteArray) {
-        connections[connId]?.let { conn ->
-            if (conn.status == TcpStatus.ESTABLISHED) {
-                val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
-                conn.outboundQueue.trySend(payload)
-                // Feed the raw SF3 bytes through the same onMessage path as real traffic so:
-                //   (a) the packet appears in conn.messages → shows in logs + battlem capture
-                //   (b) addMessage updates _outboundCounter synchronously → next injection
-                //       gets counter+1 instead of a duplicate
-                //   (c) GameProtocolParser fires the correct BattleCommand event naturally
-                onMessage(connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
-            }
-        }
+    fun injectToServer(connId: String, data: ByteArray): String? {
+        val conn = connections[connId]
+            ?: return "FAIL: connId not in connections (${connections.size} conns tracked)"
+        if (conn.status != TcpStatus.ESTABLISHED)
+            return "FAIL: conn.status=${conn.status} (not ESTABLISHED)"
+        val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
+        conn.outboundQueue.trySend(payload)
+        onMessage(connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
+        return "QUEUED  ws=${conn.isWebSocket}"
     }
 
-    /** Inject to the first ESTABLISHED connection (last-resort fallback). */
-    fun injectToAny(data: ByteArray) {
-        connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }?.let { conn ->
-            val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
-            conn.outboundQueue.trySend(payload)
-            onMessage(conn.connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
-        }
+    /**
+     * Inject to the first ESTABLISHED connection (last-resort fallback).
+     * Returns a diagnostic string, or null if no ESTABLISHED connection exists.
+     */
+    fun injectToAny(data: ByteArray): String? {
+        val conn = connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }
+            ?: return "FAIL: injectToAny found no ESTABLISHED conn (${connections.size} conns)"
+        val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
+        conn.outboundQueue.trySend(payload)
+        onMessage(conn.connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
+        return "QUEUED via any  id=…${conn.connId.takeLast(16)}  ws=${conn.isWebSocket}"
     }
 
     /**

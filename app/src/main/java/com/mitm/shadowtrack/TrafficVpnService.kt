@@ -147,14 +147,33 @@ class TrafficVpnService : VpnService() {
      * in a masked WS binary frame before writing to the server.
      */
     fun injectToGameSocket(data: ByteArray) {
+        injectToGameSocketDiag(data)
+    }
+
+    /**
+     * Same as injectToGameSocket but returns a one-line diagnostic string so the
+     * overlay can display exactly what happened (or null if tcpHandler is null).
+     */
+    fun injectToGameSocketDiag(data: ByteArray): String? {
+        val handler = tcpHandler ?: return null
+
         val vm = AppState.viewModel
-        val battleId = vm.battleSocketId.value
+        val battleId    = vm.battleSocketId.value
         val handshakeId = vm.gameSocketId.value
 
-        when {
-            battleId != null    -> tcpHandler?.injectToServer(battleId, data)
-            handshakeId != null -> tcpHandler?.injectToServer(handshakeId, data)
-            else                -> tcpHandler?.injectToAny(data)
+        return when {
+            battleId != null -> {
+                val r = handler.injectToServer(battleId, data)
+                "battleSocket …${battleId.takeLast(16)}: ${r ?: "handler returned null"}"
+            }
+            handshakeId != null -> {
+                val r = handler.injectToServer(handshakeId, data)
+                "gameSocket …${handshakeId.takeLast(16)}: ${r ?: "handler returned null"}"
+            }
+            else -> {
+                val r = handler.injectToAny(data)
+                "injectToAny: ${r ?: "handler returned null"}"
+            }
         }
     }
 
