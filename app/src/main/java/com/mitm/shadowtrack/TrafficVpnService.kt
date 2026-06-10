@@ -151,16 +151,45 @@ class TrafficVpnService : VpnService() {
     }
 
     /**
-     * Same as injectToGameSocket but returns a one-line diagnostic string so the
-     * overlay can display exactly what happened (or null if tcpHandler is null).
+     * Direct-write injection — writes bytes straight to the server socket with a
+     * per-connection lock, bypassing the outbound queue.  Returns a diagnostic string.
+     *
+     * Priority:
+     *   1. battleSocketId — connection that carried BattleStarted
+     *   2. gameSocketId   — HANDSHAKE connection
+     *   3. any ESTABLISHED connection
+     *
+     * This must be called from a background thread / IO coroutine; the write lock
+     * may block briefly if writerLoop is mid-write.
      */
-    fun injectToGameSocketDiag(data: ByteArray): String? {
-        val handler = tcpHandler ?: return null
-
+    fun injectDirect(data: ByteArray): String {
+        val handler = tcpHandler ?: return "FAIL: tcpHandler is null (VPN not running)"
         val vm = AppState.viewModel
         val battleId    = vm.battleSocketId.value
         val handshakeId = vm.gameSocketId.value
+        return when {
+            battleId != null -> {
+                val r = handler.injectDirect(battleId, data)
+                "battleSocket …${battleId.takeLast(16)}: $r"
+            }
+            handshakeId != null -> {
+                val r = handler.injectDirect(handshakeId, data)
+                "gameSocket …${handshakeId.takeLast(16)}: $r"
+            }
+            else -> handler.injectDirectToAny(data)
+        }
+    }
 
+    /**
+     * Same as injectToGameSocket but returns a one-line diagnostic string so the
+     * overlay can display exactly what happened (or null if tcpHandler is null).
+     * Kept for backward compatibility — prefer injectDirect.
+     */
+    fun injectToGameSocketDiag(data: ByteArray): String? {
+        val handler = tcpHandler ?: return null
+        val vm = AppState.viewModel
+        val battleId    = vm.battleSocketId.value
+        val handshakeId = vm.gameSocketId.value
         return when {
             battleId != null -> {
                 val r = handler.injectToServer(battleId, data)

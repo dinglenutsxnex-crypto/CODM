@@ -13,6 +13,12 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.mitm.shadowtrack.model.ConnectionViewModel
 import com.mitm.shadowtrack.model.GameEvent
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class OverlayService : Service() {
 
@@ -34,12 +40,31 @@ class OverlayService : Service() {
     private var currentBattleId: String? = null
     private var lastWinConfirmedId: String? = null
 
+    // Background scope for IO work (e.g. injectDirect) that must not run on main thread.
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Index into the ViewModel's gameEventList — how many items from that list we've
+    // already added to our local `events`.  The ViewModel uses a rolling 2000-item cap;
+    // we track by index within the CURRENT snapshot rather than by absolute count so
+    // we never lose events when the ViewModel drops old ones from the front.
+    private var vmEventsCursor = 0
+
     // ── Event log observer ────────────────────────────────────────────────
 
     private val eventObserver = Observer<List<GameEvent>> { newList ->
-        val prevSize = events.size
-        val added = newList.drop(prevSize)
+        // The ViewModel maintains a rolling window (up to 2000 items). Our local `events`
+        // list grows without bound (cleared by the Clear button).  We must correctly
+        // identify which items in `newList` are new since our last update.
+        //
+        // Strategy: `vmEventsCursor` is how many items from `newList` we've already
+        // consumed.  When the ViewModel hasn't rolled over yet, vmEventsCursor == events.size
+        // (they grow together).  After a roll-over the ViewModel drops old events off the
+        // front, so newList.size < vmEventsCursor — in that case all remaining items are new.
+        val added = if (vmEventsCursor < newList.size) newList.drop(vmEventsCursor) else emptyList()
+        vmEventsCursor = newList.size
+
         if (added.isNotEmpty()) {
+            val prevSize = events.size
             events.addAll(added)
             adapter.notifyItemRangeInserted(prevSize, added.size)
 
@@ -189,17 +214,18 @@ class OverlayService : Service() {
         view.findViewById<TextView>(R.id.menu_clear).setOnClickListener {
             val sz = events.size
             events.clear()
+            vmEventsCursor = 0
             adapter.notifyItemRangeRemoved(0, sz)
             view.findViewById<TextView>(R.id.tv_event_count)?.text = "0"
             view.findViewById<TextView>(R.id.tv_status_bar)?.text = "cleared"
             menuPanel.visibility = View.GONE
         }
 
-        // Download logs
+        // Download logs — export raw bytes from ALL connections so the server's
+        // battle responses (on battleSocketId) are included, not just gameSocketId.
         view.findViewById<TextView>(R.id.menu_download).setOnClickListener {
             menuPanel.visibility = View.GONE
-            val id = AppState.viewModel.gameSocketId.value
-            val msgs = if (id != null) AppState.viewModel.getMessages(id) else emptyList()
+            val msgs = AppState.viewModel.getAllMessages()
             LogDownloader.downloadAndShare(this, msgs)
         }
 
@@ -250,24 +276,31 @@ class OverlayService : Service() {
                 winStatus.setTextColor(Color.parseColor("#FFFF4444"))
                 return@setOnClickListener
             }
-            val vm = AppState.viewModel
-            val battleSock = vm.battleSocketId.value
-            val gameSock   = vm.gameSocketId.value
-            val socketInfo = "bSock=${battleSock?.takeLast(12) ?: "null"}  gSock=${gameSock?.takeLast(12) ?: "null"}"
-            try {
-                val counter = vm.nextInjectCounter
-                val packet  = com.mitm.shadowtrack.net.PacketInjector.buildFinishFight(idLong, counter)
-                val result  = vpnInstance.injectToGameSocketDiag(packet)
-                if (result == null) {
-                    winStatus.text = "✗ FAIL: injection returned null\n$socketInfo"
-                    winStatus.setTextColor(Color.parseColor("#FFFF4444"))
-                } else {
-                    winStatus.text = ">> injected  ctr=$counter\n$result"
-                    winStatus.setTextColor(Color.parseColor("#FF3FB950"))
+
+            // Snapshot counter on main thread (safe — AtomicLong read)
+            val vm      = AppState.viewModel
+            val counter = vm.nextInjectCounter
+            val packet  = com.mitm.shadowtrack.net.PacketInjector.buildFinishFight(idLong, counter)
+
+            winStatus.text = "⏳ sending…  ctr=$counter"
+            winStatus.setTextColor(Color.parseColor("#FF8B949E"))
+
+            // injectDirect does a blocking channel write — must NOT run on main thread.
+            serviceScope.launch {
+                val result = try {
+                    vpnInstance.injectDirect(packet)
+                } catch (e: Exception) {
+                    "EXCEPTION: ${e.message}"
                 }
-            } catch (e: Exception) {
-                winStatus.text = "✗ EXCEPTION: ${e.message}\n$socketInfo"
-                winStatus.setTextColor(Color.parseColor("#FFFF4444"))
+                val ok = result.startsWith("SENT")
+                withContext(Dispatchers.Main) {
+                    winStatus.text = if (ok) ">> injected  ctr=$counter\n$result"
+                                     else "✗ $result"
+                    winStatus.setTextColor(
+                        if (ok) Color.parseColor("#FF3FB950")
+                        else    Color.parseColor("#FFFF4444")
+                    )
+                }
             }
         }
 
@@ -373,6 +406,7 @@ class OverlayService : Service() {
         AppState.viewModel.gameEvents.removeObserver(eventObserver)
         AppState.viewModel.gameEvents.removeObserver(winObserver)
         AppState.viewModel.currentBattle.removeObserver(battleObserver)
+        serviceScope.cancel()
         removeOverlay()
         removeMini()
         super.onDestroy()

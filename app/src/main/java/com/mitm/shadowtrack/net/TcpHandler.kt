@@ -24,6 +24,9 @@ data class TcpConnState(
     var status: TcpStatus = TcpStatus.SYN_RECEIVED,
     // Outbound data queue — ensures writes to the real server are serialized
     val outboundQueue: KChannel<ByteArray> = KChannel(KChannel.UNLIMITED),
+    // Write lock — held by writerLoop during each write; also held by injectDirect
+    // so injected bytes never interleave with queued bytes mid-packet.
+    val writeLock: java.util.concurrent.locks.ReentrantLock = java.util.concurrent.locks.ReentrantLock(),
     var awaitingWsHandshake: Boolean = false,
     var isWebSocket: Boolean = false,
     val inboundWsBuffer: ByteArrayOutputStream = ByteArrayOutputStream(),
@@ -32,7 +35,11 @@ data class TcpConnState(
     // is 33 KB decompressed / 12 KB compressed) arrive in multiple TCP segments.
     // We must buffer raw bytes and emit ONLY complete SF3 frames to the parser.
     val inboundSf3Buffer: ByteArrayOutputStream = ByteArrayOutputStream(),
-    val outboundSf3Buffer: ByteArrayOutputStream = ByteArrayOutputStream()
+    val outboundSf3Buffer: ByteArrayOutputStream = ByteArrayOutputStream(),
+    // Counts consecutive unknown-frame-type bytes seen in parseSf3Frames.
+    // Once this exceeds MAX_RESYNC_BYTES the buffer is wiped and resync counter reset
+    // so a single bad chunk never permanently blocks all future inbound events.
+    var inboundResyncBytes: Int = 0
 ) {
     val key get() = "${srcIp.joinToString(".")}:$srcPort->${dstIp.joinToString(".")}:$dstPort"
 }
@@ -181,16 +188,21 @@ class TcpHandler(
 
     /**
      * Drains the outbound queue and writes each chunk to the real server socket.
-     * Runs on a single coroutine → no concurrent writes, no interleaving.
-     * Channel is blocking → write() sends all bytes before returning.
+     * Acquires writeLock around each write so injectDirect can safely interleave
+     * without corrupting the byte stream.
      */
     private suspend fun writerLoop(conn: TcpConnState) {
         val ch = conn.channel ?: return
         try {
             for (data in conn.outboundQueue) {
                 val buf = ByteBuffer.wrap(data)
-                while (buf.hasRemaining()) {
-                    ch.write(buf)   // blocking: retries internally until buffer drains
+                conn.writeLock.lock()
+                try {
+                    while (buf.hasRemaining()) {
+                        ch.write(buf)
+                    }
+                } finally {
+                    conn.writeLock.unlock()
                 }
             }
         } catch (_: Exception) {
@@ -245,7 +257,7 @@ class TcpHandler(
                     // so WinConfirmed is never emitted.  We accumulate bytes here and only
                     // call onMessage once a COMPLETE frame is available.
                     conn.inboundSf3Buffer.write(data)
-                    parseSf3Frames(conn.connId, conn.inboundSf3Buffer, LiveMessage.Direction.INBOUND)
+                    parseSf3Frames(conn.connId, conn.inboundSf3Buffer, LiveMessage.Direction.INBOUND, conn)
                 }
             }
         } catch (_: Exception) {
@@ -321,6 +333,16 @@ class TcpHandler(
         if (offset < raw.size) buffer.write(raw, offset, raw.size - offset)
     }
 
+    companion object {
+        // If parseSf3Frames skips more than this many consecutive unknown-type bytes,
+        // the buffer is poisoned (bad data, protocol switch, partial write corruption).
+        // Wipe it and start fresh rather than blocking all future inbound events.
+        private const val MAX_RESYNC_BYTES = 64
+        // Maximum sane compressed-frame size (8 MB). A legitimately larger frame would be
+        // pathological; treat it as a sync error and wipe.
+        private const val MAX_FRAME_BYTES = 8 * 1024 * 1024
+    }
+
     /**
      * Buffers raw bytes from [buffer] and emits each COMPLETE SF3 frame to [onMessage].
      * Leftover incomplete bytes stay in [buffer] for the next call.
@@ -329,15 +351,15 @@ class TcpHandler(
      *   Small  0x01 + 1B-len + payload          total = 2 + len
      *   Large  0x02 + 4B-LE-len + compressed    total = 5 + compLen
      *
-     * This is the key fix for WinConfirmed never firing: the server's finish_fight
-     * response is 12 KB compressed / 33 KB decompressed and arrives across 3 TCP reads.
-     * Without this buffer, each partial read is passed to extractPayload which checks
-     * `data.size < 5 + compLen` and returns null, silently dropping the response.
+     * Sync-loss recovery: if more than MAX_RESYNC_BYTES consecutive bytes have an unknown
+     * frame type, the buffer is wiped. This prevents a single bad server chunk (e.g. an
+     * unexpected keepalive or protocol error) from permanently blocking all future events.
      */
     private fun parseSf3Frames(
         connId: String,
         buffer: ByteArrayOutputStream,
-        dir: LiveMessage.Direction
+        dir: LiveMessage.Direction,
+        conn: TcpConnState? = null
     ) {
         val raw = buffer.toByteArray()
         buffer.reset()
@@ -350,19 +372,45 @@ class TcpHandler(
                     if (pos + 2 > raw.size) break
                     val len = raw[pos + 1].toInt() and 0xFF
                     if (pos + 2 + len > raw.size) break
+                    conn?.inboundResyncBytes = 0
                     onMessage(connId, LiveMessage(dir, raw.copyOfRange(pos, pos + 2 + len)))
                     pos += 2 + len
                 }
                 0x02 -> {
                     if (pos + 5 > raw.size) break
                     val compLen = ByteBuffer.wrap(raw, pos + 1, 4)
-                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).int
-                    if (compLen <= 0 || pos + 5 + compLen > raw.size) break
-                    onMessage(connId, LiveMessage(dir, raw.copyOfRange(pos, pos + 5 + compLen)))
-                    pos += 5 + compLen
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).int and 0x7FFFFFFF
+                    when {
+                        compLen <= 0 || compLen > MAX_FRAME_BYTES -> {
+                            // Implausible size — treat as sync error, skip this byte
+                            if (conn != null) {
+                                conn.inboundResyncBytes++
+                                if (conn.inboundResyncBytes > MAX_RESYNC_BYTES) {
+                                    conn.inboundResyncBytes = 0
+                                    return
+                                }
+                            }
+                            pos++
+                        }
+                        pos + 5 + compLen > raw.size -> break  // frame not yet complete
+                        else -> {
+                            conn?.inboundResyncBytes = 0
+                            onMessage(connId, LiveMessage(dir, raw.copyOfRange(pos, pos + 5 + compLen)))
+                            pos += 5 + compLen
+                        }
+                    }
                 }
                 else -> {
-                    // Unknown frame type — skip one byte and try to re-sync
+                    // Unknown frame type byte — try to re-sync one byte at a time.
+                    // If we've skipped too many, wipe the buffer and bail out so
+                    // future valid frames aren't permanently blocked.
+                    if (conn != null && dir == LiveMessage.Direction.INBOUND) {
+                        conn.inboundResyncBytes++
+                        if (conn.inboundResyncBytes > MAX_RESYNC_BYTES) {
+                            conn.inboundResyncBytes = 0
+                            return  // buffer already reset above; start fresh next read
+                        }
+                    }
                     pos++
                 }
             }
@@ -449,14 +497,54 @@ class TcpHandler(
     }
 
     /**
-     * Inject raw SF3-framed bytes into the outbound stream of [connId].
+     * Inject raw SF3-framed bytes DIRECTLY into the server socket, bypassing the
+     * outbound queue entirely.
      *
-     * If the connection is a WebSocket the raw bytes are automatically wrapped
-     * in a masked WS binary frame — the server expects properly-framed WS data
-     * and silently discards bare proto bytes.
+     * This is the preferred injection path because:
+     *   • It works even if writerLoop has crashed (closed channel is detected immediately
+     *     and a clear error is returned rather than a silent no-op).
+     *   • It acquires writeLock so bytes never interleave with the writerLoop's writes.
+     *   • It returns a concrete result: "SENT Nb" on success, "FAIL: …" on any error.
      *
-     * Returns a diagnostic string describing the outcome, or null if the connId
-     * was not found or the connection was not ESTABLISHED.
+     * Called from a background coroutine (Dispatchers.IO) in the overlay — never from
+     * the main thread — so blocking on writeLock is safe.
+     */
+    fun injectDirect(connId: String, data: ByteArray): String {
+        val conn = connections[connId]
+            ?: return "FAIL: connId not in connections (${connections.size} active)"
+        if (conn.status != TcpStatus.ESTABLISHED)
+            return "FAIL: status=${conn.status}"
+        val ch = conn.channel
+            ?: return "FAIL: channel is null"
+        if (!ch.isOpen || !ch.isConnected)
+            return "FAIL: channel closed/disconnected"
+        val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
+        return try {
+            conn.writeLock.lock()
+            try {
+                val buf = java.nio.ByteBuffer.wrap(payload)
+                while (buf.hasRemaining()) ch.write(buf)
+                "SENT ${payload.size}B  ws=${conn.isWebSocket}"
+            } finally {
+                conn.writeLock.unlock()
+            }
+        } catch (e: Exception) {
+            "FAIL: write error: ${e.message}"
+        }
+    }
+
+    /**
+     * injectDirect on the first ESTABLISHED connection (last-resort fallback).
+     */
+    fun injectDirectToAny(data: ByteArray): String {
+        val conn = connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }
+            ?: return "FAIL: no ESTABLISHED conn (${connections.size} tracked)"
+        return injectDirect(conn.connId, data)
+    }
+
+    /**
+     * Queue-based inject — kept for reference but injectDirect is preferred.
+     * Returns null if [connId] is not found or not ESTABLISHED.
      */
     fun injectToServer(connId: String, data: ByteArray): String? {
         val conn = connections[connId]
@@ -464,23 +552,21 @@ class TcpHandler(
         if (conn.status != TcpStatus.ESTABLISHED)
             return "FAIL: conn.status=${conn.status} (not ESTABLISHED)"
         val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
-        conn.outboundQueue.trySend(payload)
-        // Do NOT call onMessage here — calling it from the main thread (overlay) while
-        // readerLoop calls it from IO causes a concurrent access pattern that silently
-        // crashes readerLoop, after which ALL inbound messages stop being logged.
-        return "QUEUED  ws=${conn.isWebSocket}"
+        val result = conn.outboundQueue.trySend(payload)
+        return if (result.isSuccess) "QUEUED  ws=${conn.isWebSocket}"
+        else "FAIL: outboundQueue closed (writerLoop died)"
     }
 
     /**
      * Inject to the first ESTABLISHED connection (last-resort fallback).
-     * Returns a diagnostic string, or null if no ESTABLISHED connection exists.
      */
     fun injectToAny(data: ByteArray): String? {
         val conn = connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }
             ?: return "FAIL: injectToAny found no ESTABLISHED conn (${connections.size} conns)"
         val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
-        conn.outboundQueue.trySend(payload)
-        return "QUEUED via any  id=…${conn.connId.takeLast(16)}  ws=${conn.isWebSocket}"
+        val result = conn.outboundQueue.trySend(payload)
+        return if (result.isSuccess) "QUEUED via any  id=…${conn.connId.takeLast(16)}  ws=${conn.isWebSocket}"
+        else "FAIL: queue closed on conn …${conn.connId.takeLast(16)}"
     }
 
     /**

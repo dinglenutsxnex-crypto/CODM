@@ -86,6 +86,17 @@ class ConnectionViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Returns every LiveMessage from every connection, sorted by timestamp (oldest first).
+     * Used by LogDownloader so exported zips contain BOTH directions from ALL sockets —
+     * auth/game socket AND battle socket — rather than just gameSocketId.
+     */
+    fun getAllMessages(): List<LiveMessage> {
+        return connectionMap.values
+            .flatMap { conn -> synchronized(conn.messages) { conn.messages.toList() } }
+            .sortedBy { it.timestamp }
+    }
+
     fun addMessage(id: String, message: LiveMessage) {
         connectionMap[id]?.let { conn ->
             // Update outbound counter SYNCHRONOUSLY before launching the coroutine.
@@ -104,7 +115,7 @@ class ConnectionViewModel : ViewModel() {
             viewModelScope.launch(Dispatchers.Default) {
                 synchronized(conn.messages) {
                     conn.messages.add(message)
-                    if (conn.messages.size > 500) conn.messages.removeAt(0)
+                    if (conn.messages.size > 2000) conn.messages.removeAt(0)
                 }
                 if (message.direction == LiveMessage.Direction.INBOUND) {
                     conn.bytesIn += message.data.size
@@ -122,7 +133,7 @@ class ConnectionViewModel : ViewModel() {
                 if (event != null) {
                     synchronized(gameEventList) {
                         gameEventList.add(event)
-                        if (gameEventList.size > 200) gameEventList.removeAt(0)
+                        if (gameEventList.size > 2000) gameEventList.removeAt(0)
                     }
                     _gameEvents.postValue(gameEventList.toList())
 
