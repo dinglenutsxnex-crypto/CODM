@@ -3,6 +3,7 @@ package com.mitm.shadowtrack.net
 import android.net.VpnService
 import com.mitm.shadowtrack.model.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel as KChannel
 import java.io.ByteArrayOutputStream
 import java.io.FileDescriptor
 import java.io.FileOutputStream
@@ -21,7 +22,8 @@ data class TcpConnState(
     var remoteSeq: Long,
     var channel: SocketChannel? = null,
     var status: TcpStatus = TcpStatus.SYN_RECEIVED,
-    val pendingData: ArrayDeque<ByteArray> = ArrayDeque(),
+    // Outbound data queue — ensures writes to the real server are serialized
+    val outboundQueue: KChannel<ByteArray> = KChannel(KChannel.UNLIMITED),
     var awaitingWsHandshake: Boolean = false,
     var isWebSocket: Boolean = false,
     val inboundWsBuffer: ByteArrayOutputStream = ByteArrayOutputStream(),
@@ -52,18 +54,17 @@ class TcpHandler(
         when {
             tcp.isSYN && !tcp.isACK -> handleSyn(packet, tcp, connKey)
             tcp.isACK && !tcp.isSYN -> handleAck(packet, tcp, connKey)
-            tcp.isFIN -> handleFin(connKey)
-            tcp.isRST -> handleRst(connKey)
+            tcp.isFIN               -> handleFin(connKey)
+            tcp.isRST               -> handleRst(connKey)
         }
     }
 
     private fun handleSyn(packet: ParsedPacket, tcp: TCPHeader, connKey: String) {
         val srcIp = packet.ip.srcAddr.address
         val dstIp = packet.ip.dstAddr.address
-        val connId = connKey
 
         val entry = ConnectionEntry(
-            id = connId,
+            id = connKey,
             protocol = Protocol.TCP,
             srcPort = tcp.srcPort,
             dstIp = packet.ip.dstAddr.hostAddress ?: "?",
@@ -72,8 +73,8 @@ class TcpHandler(
         )
         onConnectionEvent(entry)
 
-        val connState = TcpConnState(
-            connId = connId,
+        val conn = TcpConnState(
+            connId = connKey,
             srcIp = srcIp,
             dstIp = dstIp,
             srcPort = tcp.srcPort,
@@ -81,35 +82,41 @@ class TcpHandler(
             localSeq = (Math.random() * 0xFFFFFFFFL).toLong(),
             remoteSeq = (tcp.seqNum + 1L) and 0xFFFFFFFFL
         )
-        connections[connKey] = connState
+        connections[connKey] = conn
 
-        sendSynAck(connState, tcp.seqNum)
+        // Reply with SYN-ACK immediately so the app can proceed
+        sendSynAck(conn, tcp.seqNum)
 
+        // Connect to the real destination, then start relay loops
         scope.launch {
             try {
                 val channel = SocketChannel.open()
+                // Keep non-blocking just for the connect phase, then switch to blocking
                 channel.configureBlocking(false)
                 vpnService.protect(channel.socket())
                 channel.connect(InetSocketAddress(packet.ip.dstAddr, tcp.dstPort))
 
                 var attempts = 0
-                while (!channel.finishConnect() && attempts++ < 50) delay(20)
+                while (!channel.finishConnect() && attempts++ < 100) delay(10)
 
-                if (channel.isConnected) {
-                    connState.channel = channel
-                    connState.status = TcpStatus.ESTABLISHED
-                    onStatusChange(connId, ConnectionStatus.ACTIVE)
-
-                    connState.pendingData.forEach { data ->
-                        channel.write(ByteBuffer.wrap(data))
-                    }
-                    connState.pendingData.clear()
-
-                    startRelayLoop(connState)
-                } else {
+                if (!channel.isConnected) {
                     channel.close()
                     cleanup(connKey)
+                    return@launch
                 }
+
+                // Switch to blocking — write() will block until ALL bytes are written,
+                // completely eliminating the "partial write silently drops data" bug.
+                channel.configureBlocking(true)
+
+                conn.channel = channel
+                conn.status = TcpStatus.ESTABLISHED
+                onStatusChange(connKey, ConnectionStatus.ACTIVE)
+
+                // Start the two relay loops
+                launch { writerLoop(conn) }
+                launch { readerLoop(conn) }
+
             } catch (e: Exception) {
                 cleanup(connKey)
             }
@@ -118,49 +125,37 @@ class TcpHandler(
 
     private fun handleAck(packet: ParsedPacket, tcp: TCPHeader, connKey: String) {
         val conn = connections[connKey] ?: return
-        conn.remoteSeq = (tcp.seqNum + maxOf(0, packet.payload.size).toLong()) and 0xFFFFFFFFL
+        if (packet.payload.isEmpty()) return
 
-        if (packet.payload.isNotEmpty()) {
-            val payloadStr = String(packet.payload, Charsets.ISO_8859_1)
+        // Update remote sequence — used as ACK number when we reply
+        conn.remoteSeq = (tcp.seqNum + packet.payload.size.toLong()) and 0xFFFFFFFFL
 
-            if (!conn.isWebSocket) {
-                // Detect outbound HTTP→WS upgrade request
-                if (payloadStr.contains("Upgrade: websocket", ignoreCase = true) ||
-                    payloadStr.contains("Upgrade: WebSocket", ignoreCase = true)) {
-                    conn.awaitingWsHandshake = true
-                }
+        // Send an immediate ACK back to the app so its retransmit timer doesn't fire
+        sendAck(conn)
 
-                val msg = LiveMessage(LiveMessage.Direction.OUTBOUND, packet.payload)
-                onMessage(conn.connId, msg)
-            } else {
-                // Already a WebSocket — parse outbound frames (client→server, masked)
-                conn.outboundWsBuffer.write(packet.payload)
-                parseWsFrames(conn.connId, conn.outboundWsBuffer, LiveMessage.Direction.OUTBOUND)
+        if (!conn.isWebSocket) {
+            // Detect the outbound HTTP Upgrade request
+            val text = String(packet.payload, Charsets.ISO_8859_1)
+            if (text.contains("Upgrade: websocket", ignoreCase = true) ||
+                text.contains("Upgrade: WebSocket", ignoreCase = true)) {
+                conn.awaitingWsHandshake = true
             }
-
-            when (conn.status) {
-                TcpStatus.ESTABLISHED -> {
-                    val ch = conn.channel
-                    if (ch != null && ch.isConnected) {
-                        scope.launch {
-                            try {
-                                ch.write(ByteBuffer.wrap(packet.payload))
-                            } catch (_: Exception) {}
-                        }
-                    } else {
-                        conn.pendingData.add(packet.payload)
-                    }
-                }
-                TcpStatus.SYN_RECEIVED -> conn.pendingData.add(packet.payload)
-                else -> {}
-            }
+            onMessage(conn.connId, LiveMessage(LiveMessage.Direction.OUTBOUND, packet.payload))
+        } else {
+            // WS is established — buffer and parse outbound frames (client→server, masked)
+            conn.outboundWsBuffer.write(packet.payload)
+            parseWsFrames(conn.connId, conn.outboundWsBuffer, LiveMessage.Direction.OUTBOUND)
         }
+
+        // Queue the raw bytes for the writer loop to send to the real server
+        conn.outboundQueue.trySend(packet.payload)
     }
 
     private fun handleFin(connKey: String) {
         val conn = connections[connKey] ?: return
         conn.status = TcpStatus.FIN_WAIT
         onStatusChange(conn.connId, ConnectionStatus.CLOSING)
+        conn.outboundQueue.close()
         scope.launch {
             conn.channel?.close()
             cleanup(connKey)
@@ -168,150 +163,125 @@ class TcpHandler(
     }
 
     private fun handleRst(connKey: String) {
-        val conn = connections[connKey] ?: return
+        val conn = connections.remove(connKey) ?: return
         conn.status = TcpStatus.CLOSED
+        conn.outboundQueue.close()
         onStatusChange(conn.connId, ConnectionStatus.CLOSED)
-        scope.launch { conn.channel?.close() }
-        connections.remove(connKey)
+        scope.launch { try { conn.channel?.close() } catch (_: Exception) {} }
     }
 
-    private fun sendSynAck(conn: TcpConnState, remoteSynSeq: Long) {
-        val packet = PacketParser.buildIPv4TCPPacket(
-            srcIp = conn.dstIp,
-            dstIp = conn.srcIp,
-            srcPort = conn.dstPort,
-            dstPort = conn.srcPort,
-            seq = conn.localSeq,
-            ack = (remoteSynSeq + 1L) and 0xFFFFFFFFL,
-            flags = 0x12,
-            window = 65535,
-            payload = ByteArray(0)
-        )
-        conn.localSeq = (conn.localSeq + 1L) and 0xFFFFFFFFL
-        writeToVpn(packet)
-    }
-
-    private fun sendAck(conn: TcpConnState) {
-        val packet = PacketParser.buildIPv4TCPPacket(
-            srcIp = conn.dstIp,
-            dstIp = conn.srcIp,
-            srcPort = conn.dstPort,
-            dstPort = conn.srcPort,
-            seq = conn.localSeq,
-            ack = conn.remoteSeq,
-            flags = 0x10,
-            window = 65535,
-            payload = ByteArray(0)
-        )
-        writeToVpn(packet)
-    }
-
-    private fun startRelayLoop(conn: TcpConnState) {
+    /**
+     * Drains the outbound queue and writes each chunk to the real server socket.
+     * Runs on a single coroutine → no concurrent writes, no interleaving.
+     * Channel is blocking → write() sends all bytes before returning.
+     */
+    private suspend fun writerLoop(conn: TcpConnState) {
         val ch = conn.channel ?: return
-        scope.launch {
-            val buf = ByteBuffer.allocate(32768)
-            while (conn.status == TcpStatus.ESTABLISHED) {
-                try {
-                    buf.clear()
-                    val read = ch.read(buf)
-                    if (read == -1) {
-                        sendFin(conn)
-                        cleanup(conn.key)
-                        break
-                    }
-                    if (read > 0) {
-                        buf.flip()
-                        val data = ByteArray(read).also { buf.get(it) }
-
-                        val pkt = PacketParser.buildIPv4TCPPacket(
-                            srcIp = conn.dstIp,
-                            dstIp = conn.srcIp,
-                            srcPort = conn.dstPort,
-                            dstPort = conn.srcPort,
-                            seq = conn.localSeq,
-                            ack = conn.remoteSeq,
-                            flags = 0x18,
-                            window = 65535,
-                            payload = data
-                        )
-                        conn.localSeq = (conn.localSeq + read.toLong()) and 0xFFFFFFFFL
-                        writeToVpn(pkt)
-
-                        if (!conn.isWebSocket && conn.awaitingWsHandshake) {
-                            // Look for server's 101 Switching Protocols response
-                            val responseStr = String(data, Charsets.ISO_8859_1)
-                            if (responseStr.contains("101 Switching Protocols", ignoreCase = true)) {
-                                conn.isWebSocket = true
-                                conn.awaitingWsHandshake = false
-                                onWebSocket(conn.connId)
-                                // The 101 response itself is the last HTTP message; log it raw
-                                onMessage(conn.connId, LiveMessage(LiveMessage.Direction.INBOUND, data))
-                                continue
-                            }
-                        }
-
-                        if (conn.isWebSocket) {
-                            // Parse inbound WS frames (server→client, not masked)
-                            conn.inboundWsBuffer.write(data)
-                            parseWsFrames(conn.connId, conn.inboundWsBuffer, LiveMessage.Direction.INBOUND)
-                        } else {
-                            onMessage(conn.connId, LiveMessage(LiveMessage.Direction.INBOUND, data))
-                        }
-                    } else {
-                        delay(5)
-                    }
-                } catch (e: Exception) {
-                    break
+        try {
+            for (data in conn.outboundQueue) {
+                val buf = ByteBuffer.wrap(data)
+                while (buf.hasRemaining()) {
+                    ch.write(buf)   // blocking: retries internally until buffer drains
                 }
             }
+        } catch (_: Exception) {
+            cleanup(conn.key)
+        }
+    }
+
+    /**
+     * Reads from the real server and injects the response back into the VPN TUN.
+     * Also handles the HTTP→WS upgrade detection in the server's 101 response.
+     */
+    private suspend fun readerLoop(conn: TcpConnState) {
+        val ch = conn.channel ?: return
+        val buf = ByteBuffer.allocate(32768)
+        try {
+            while (conn.status == TcpStatus.ESTABLISHED) {
+                buf.clear()
+                val read = withContext(Dispatchers.IO) { ch.read(buf) }
+                if (read == -1) {
+                    sendFin(conn)
+                    cleanup(conn.key)
+                    break
+                }
+                if (read <= 0) continue
+
+                buf.flip()
+                val data = ByteArray(read).also { buf.get(it) }
+
+                // Push data back to the app through the TUN interface
+                sendDataToApp(conn, data)
+
+                if (!conn.isWebSocket && conn.awaitingWsHandshake) {
+                    val text = String(data, Charsets.ISO_8859_1)
+                    if (text.contains("101 Switching Protocols", ignoreCase = true)) {
+                        conn.isWebSocket = true
+                        conn.awaitingWsHandshake = false
+                        onWebSocket(conn.connId)
+                        // The 101 response itself is logged as the handshake message
+                        onMessage(conn.connId, LiveMessage(LiveMessage.Direction.INBOUND, data))
+                        continue
+                    }
+                }
+
+                if (conn.isWebSocket) {
+                    conn.inboundWsBuffer.write(data)
+                    parseWsFrames(conn.connId, conn.inboundWsBuffer, LiveMessage.Direction.INBOUND)
+                } else {
+                    onMessage(conn.connId, LiveMessage(LiveMessage.Direction.INBOUND, data))
+                }
+            }
+        } catch (_: Exception) {
             cleanup(conn.key)
         }
     }
 
     /**
      * Parses as many complete WebSocket frames as possible from [buffer].
-     * Any leftover incomplete bytes remain in the buffer for the next read.
+     * Any leftover incomplete bytes stay in the buffer for the next read.
      *
-     * WS frame layout:
+     * Frame layout:
      *   Byte 0: FIN(1) RSV(3) Opcode(4)
-     *   Byte 1: MASK(1) PayloadLen(7)   [126 → next 2 bytes, 127 → next 8 bytes]
+     *   Byte 1: MASK(1) PayloadLen(7)  [126→next 2B, 127→next 8B]
      *   Masking key (4 bytes, only if MASK=1)
-     *   Payload
+     *   Payload (XOR'd with masking key if masked)
      */
-    private fun parseWsFrames(connId: String, buffer: ByteArrayOutputStream, direction: LiveMessage.Direction) {
+    private fun parseWsFrames(connId: String, buffer: ByteArrayOutputStream, dir: LiveMessage.Direction) {
         val raw = buffer.toByteArray()
         buffer.reset()
 
         var offset = 0
         while (offset < raw.size) {
-            if (offset + 2 > raw.size) break  // Need at least 2 header bytes
+            if (offset + 2 > raw.size) break
 
             val b0 = raw[offset].toInt() and 0xFF
             val b1 = raw[offset + 1].toInt() and 0xFF
             val opcode = b0 and 0x0F
             val masked = (b1 and 0x80) != 0
             var payloadLen = (b1 and 0x7F).toLong()
-
             var headerSize = 2
-            if (payloadLen == 126L) {
-                if (offset + 4 > raw.size) break  // Need 2 extended length bytes
-                payloadLen = ((raw[offset + 2].toInt() and 0xFF) shl 8 or
-                              (raw[offset + 3].toInt() and 0xFF)).toLong()
-                headerSize = 4
-            } else if (payloadLen == 127L) {
-                if (offset + 10 > raw.size) break  // Need 8 extended length bytes
-                payloadLen = 0L
-                for (i in 0..7) {
-                    payloadLen = (payloadLen shl 8) or (raw[offset + 2 + i].toInt() and 0xFF).toLong()
+
+            when {
+                payloadLen == 126L -> {
+                    if (offset + 4 > raw.size) break
+                    payloadLen = ((raw[offset + 2].toInt() and 0xFF) shl 8 or
+                                  (raw[offset + 3].toInt() and 0xFF)).toLong()
+                    headerSize = 4
                 }
-                headerSize = 10
+                payloadLen == 127L -> {
+                    if (offset + 10 > raw.size) break
+                    payloadLen = 0L
+                    for (i in 0..7) payloadLen = (payloadLen shl 8) or (raw[offset + 2 + i].toInt() and 0xFF).toLong()
+                    headerSize = 10
+                }
             }
 
             val maskOffset = offset + headerSize
             val dataOffset = maskOffset + if (masked) 4 else 0
-            val totalFrame = dataOffset - offset + payloadLen.toInt()
+            val totalFrame = (dataOffset - offset) + payloadLen.toInt()
 
-            if (offset + totalFrame > raw.size) break  // Frame not yet complete
+            if (offset + totalFrame > raw.size) break  // incomplete frame, wait for more data
 
             val payload = ByteArray(payloadLen.toInt())
             if (masked) {
@@ -323,52 +293,100 @@ class TcpHandler(
                 System.arraycopy(raw, dataOffset, payload, 0, payload.size)
             }
 
-            // Emit a message for data frames only (text=1, binary=2, continuation=0)
+            // Emit for data frames (continuation=0, text=1, binary=2)
             if (opcode in 0..2 && payload.isNotEmpty()) {
-                onMessage(connId, LiveMessage(direction, payload))
+                onMessage(connId, LiveMessage(dir, payload))
             }
 
             offset += totalFrame
         }
 
-        // Buffer any leftover incomplete bytes
-        if (offset < raw.size) {
-            buffer.write(raw, offset, raw.size - offset)
-        }
+        // Keep any leftover bytes for the next read
+        if (offset < raw.size) buffer.write(raw, offset, raw.size - offset)
     }
 
-    private fun sendFin(conn: TcpConnState) {
-        val packet = PacketParser.buildIPv4TCPPacket(
+    // ── Packet building helpers ───────────────────────────────────────────────
+
+    private fun sendDataToApp(conn: TcpConnState, data: ByteArray) {
+        val pkt = PacketParser.buildIPv4TCPPacket(
             srcIp = conn.dstIp,
             dstIp = conn.srcIp,
             srcPort = conn.dstPort,
             dstPort = conn.srcPort,
             seq = conn.localSeq,
             ack = conn.remoteSeq,
-            flags = 0x11,
+            flags = 0x18, // PSH + ACK
+            window = 65535,
+            payload = data
+        )
+        conn.localSeq = (conn.localSeq + data.size.toLong()) and 0xFFFFFFFFL
+        writeToVpn(pkt)
+    }
+
+    private fun sendSynAck(conn: TcpConnState, remoteSynSeq: Long) {
+        val pkt = PacketParser.buildIPv4TCPPacket(
+            srcIp = conn.dstIp,
+            dstIp = conn.srcIp,
+            srcPort = conn.dstPort,
+            dstPort = conn.srcPort,
+            seq = conn.localSeq,
+            ack = (remoteSynSeq + 1L) and 0xFFFFFFFFL,
+            flags = 0x12, // SYN + ACK
+            window = 65535,
+            payload = ByteArray(0)
+        )
+        conn.localSeq = (conn.localSeq + 1L) and 0xFFFFFFFFL
+        writeToVpn(pkt)
+    }
+
+    private fun sendAck(conn: TcpConnState) {
+        val pkt = PacketParser.buildIPv4TCPPacket(
+            srcIp = conn.dstIp,
+            dstIp = conn.srcIp,
+            srcPort = conn.dstPort,
+            dstPort = conn.srcPort,
+            seq = conn.localSeq,
+            ack = conn.remoteSeq,
+            flags = 0x10, // ACK
+            window = 65535,
+            payload = ByteArray(0)
+        )
+        writeToVpn(pkt)
+    }
+
+    private fun sendFin(conn: TcpConnState) {
+        val pkt = PacketParser.buildIPv4TCPPacket(
+            srcIp = conn.dstIp,
+            dstIp = conn.srcIp,
+            srcPort = conn.dstPort,
+            dstPort = conn.srcPort,
+            seq = conn.localSeq,
+            ack = conn.remoteSeq,
+            flags = 0x11, // FIN + ACK
             window = 0,
             payload = ByteArray(0)
         )
-        writeToVpn(packet)
+        writeToVpn(pkt)
     }
 
     private fun writeToVpn(data: ByteArray) {
-        try {
-            outStream.write(data)
-        } catch (_: Exception) {}
+        try { outStream.write(data) } catch (_: Exception) {}
     }
 
     private fun cleanup(connKey: String) {
-        val conn = connections.remove(connKey)
-        if (conn != null) {
-            onStatusChange(conn.connId, ConnectionStatus.CLOSED)
-            try { conn.channel?.close() } catch (_: Exception) {}
-        }
+        val conn = connections.remove(connKey) ?: return
+        conn.status = TcpStatus.CLOSED
+        conn.outboundQueue.close()
+        onStatusChange(conn.connId, ConnectionStatus.CLOSED)
+        try { conn.channel?.close() } catch (_: Exception) {}
     }
 
     fun shutdown() {
         scope.cancel()
-        connections.values.forEach { try { it.channel?.close() } catch (_: Exception) {} }
+        connections.values.forEach {
+            it.outboundQueue.close()
+            try { it.channel?.close() } catch (_: Exception) {}
+        }
         connections.clear()
     }
 }
