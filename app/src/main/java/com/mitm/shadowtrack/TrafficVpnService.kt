@@ -80,7 +80,8 @@ class TrafficVpnService : VpnService() {
                 onMessage = { id, msg -> viewModel.addMessage(id, msg) },
                 onStatusChange = { id, status ->
                     viewModel.updateConnectionStatus(id, status)
-                }
+                },
+                onWebSocket = { id -> viewModel.markAsWebSocket(id) }
             )
 
             udpHandler = UdpHandler(

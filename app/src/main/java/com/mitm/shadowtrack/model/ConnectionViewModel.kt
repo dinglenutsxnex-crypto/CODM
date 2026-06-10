@@ -51,6 +51,14 @@ class ConnectionViewModel : ViewModel() {
         }
     }
 
+    fun markAsWebSocket(id: String) {
+        connectionMap[id]?.let {
+            it.isWebSocket = true
+            it.lastActivityTime = System.currentTimeMillis()
+            publishUpdate()
+        }
+    }
+
     fun addMessage(id: String, message: LiveMessage) {
         connectionMap[id]?.let { conn ->
             viewModelScope.launch(Dispatchers.Default) {
