@@ -460,6 +460,12 @@ class TcpHandler(
             if (conn.status == TcpStatus.ESTABLISHED) {
                 val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
                 conn.outboundQueue.trySend(payload)
+                // Feed the raw SF3 bytes through the same onMessage path as real traffic so:
+                //   (a) the packet appears in conn.messages → shows in logs + battlem capture
+                //   (b) addMessage updates _outboundCounter synchronously → next injection
+                //       gets counter+1 instead of a duplicate
+                //   (c) GameProtocolParser fires the correct BattleCommand event naturally
+                onMessage(connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
             }
         }
     }
@@ -469,6 +475,7 @@ class TcpHandler(
         connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }?.let { conn ->
             val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
             conn.outboundQueue.trySend(payload)
+            onMessage(conn.connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
         }
     }
 

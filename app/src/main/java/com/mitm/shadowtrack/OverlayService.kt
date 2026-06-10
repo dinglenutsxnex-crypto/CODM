@@ -236,11 +236,11 @@ class OverlayService : Service() {
                 val counter = AppState.viewModel.nextInjectCounter
                 val packet = com.mitm.shadowtrack.net.PacketInjector.buildFinishFight(idLong, counter)
                 TrafficVpnService.instance?.injectToGameSocket(packet)
-                // Emit a synthetic event so logs + Events tab update immediately
-                AppState.viewModel.emitEvent(
-                    GameEvent.BattleCommand("event_battle_finish_fight", id, isOutbound = true)
-                )
-                winStatus.text = ">> event_battle_finish_fight injected"
+                // No synthetic emitEvent needed — injectToServer now calls onMessage()
+                // directly so the packet flows through addMessage() exactly like real
+                // traffic: it appears in conn.messages (visible in logs + battlem capture),
+                // _outboundCounter is updated, and GameProtocolParser fires the event.
+                winStatus.text = ">> event_battle_finish_fight injected  ctr=$counter"
                 winStatus.setTextColor(Color.parseColor("#FF3FB950"))
             } catch (e: Exception) {
                 winStatus.text = "✗ ${e.message}"
