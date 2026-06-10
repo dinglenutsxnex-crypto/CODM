@@ -4,28 +4,43 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Builds SF3 wire-format packets that can be injected into the outbound
- * stream of the game socket.
+ * Builds SF3 wire-format packets for injection.
  *
  * Wire format:
  *   Small  [0x01][1B len][protobuf envelope]
  *   Large  [0x02][4B LE len][raw-deflate protobuf envelope]
  *
- * Proto envelope:
- *   field[1] varint  = controller  (3 = extension)
- *   field[2] string  = command
- *   field[3] bytes   = params (nested proto)
+ * Verified against captured outbound event_battle_finish_fight packet (user_3):
+ *
+ *   envelope:
+ *     field[1] varint = 34          (controller)
+ *     field[2] string = "event_battle_finish_fight"
+ *     field[3] bytes  = params
+ *
+ *   params:
+ *     field[1]  varint = battleId          (e.g. 3001602)
+ *     field[4]  varint = 3                 (constant)
+ *     field[6]  bytes  = {field[1] = ts}   (current timestamp ms, nested proto)
+ *     field[7]  varint = 1                 (win outcome)
+ *     field[10] bytes  = ""                (empty)
+ *     field[13] bytes  = {field[2] = 29}   (result payload, nested proto)
  */
 object PacketInjector {
 
-    // ── Public API ────────────────────────────────────────────────────────
-
     fun buildFinishFight(battleId: Long): ByteArray {
+        val ts        = System.currentTimeMillis()
+        val tsProto   = proto { varintField(1, ts) }
+        val resProto  = proto { varintField(2, 29L) }
+
         val params = proto {
-            varintField(1, battleId)   // battle_id
-            varintField(2, 1L)         // outcome = win (best guess; 0=lose 1=win)
+            varintField(1,  battleId)           // battle_id
+            varintField(4,  3L)                 // constant
+            bytesField(6,   tsProto)             // timestamp nested proto
+            varintField(7,  1L)                 // win = 1
+            bytesField(10,  ByteArray(0))        // empty field
+            bytesField(13,  resProto)            // result nested proto
         }
-        return envelope("finish_fight", params)
+        return envelope("event_battle_finish_fight", params, controller = 34L)
     }
 
     // ── Proto writer ──────────────────────────────────────────────────────
@@ -36,9 +51,9 @@ object PacketInjector {
         return w.toByteArray()
     }
 
-    private fun envelope(command: String, params: ByteArray): ByteArray {
+    private fun envelope(command: String, params: ByteArray, controller: Long): ByteArray {
         val body = proto {
-            varintField(1, 3L)          // controller = extension
+            varintField(1, controller)
             stringField(2, command)
             bytesField(3, params)
         }
@@ -57,7 +72,7 @@ object PacketInjector {
         private val buf = mutableListOf<Byte>()
 
         fun varintField(fieldNum: Int, value: Long) {
-            writeVarint(((fieldNum.toLong() shl 3) or 0L))
+            writeVarint((fieldNum.toLong() shl 3) or 0L)
             writeVarint(value)
         }
 
@@ -66,7 +81,7 @@ object PacketInjector {
         }
 
         fun bytesField(fieldNum: Int, bytes: ByteArray) {
-            writeVarint(((fieldNum.toLong() shl 3) or 2L))
+            writeVarint((fieldNum.toLong() shl 3) or 2L)
             writeVarint(bytes.size.toLong())
             bytes.forEach { buf.add(it) }
         }

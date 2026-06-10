@@ -112,7 +112,7 @@ class ConnectionViewModel : ViewModel() {
                             _currentBattle.postValue(null)
                         }
                         is GameEvent.BattleCommand -> {
-                            if (event.name == "finish_fight" || event.name == "brawler_finish") {
+                            if (event.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight")) {
                                 _currentBattle.postValue(null)
                             }
                         }
@@ -166,7 +166,7 @@ class ConnectionViewModel : ViewModel() {
                 _currentBattle.postValue(null)
             }
             is GameEvent.BattleCommand -> {
-                if (event.name == "finish_fight" || event.name == "brawler_finish") {
+                if (event.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight")) {
                     _currentBattle.postValue(null)
                 }
             }

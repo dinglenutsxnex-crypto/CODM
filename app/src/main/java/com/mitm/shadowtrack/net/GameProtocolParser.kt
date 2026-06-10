@@ -13,9 +13,17 @@ import java.util.zip.Inflater
  * Large packet:  [0x02][4B LE length][raw-deflate compressed protobuf payload]
  *
  * Outer protobuf envelope:
- *   field[1] varint  = controller  (1=system, 3=extension)
- *   field[2] string  = command     ("HANDSHAKE", "LOGIN", "ping", etc.)
+ *   field[1] varint  = controller  (23=battle-start server, 34=battle-finish client, etc.)
+ *   field[2] string  = command     ("HANDSHAKE", "LOGIN", "event_battle_start_fight", etc.)
  *   field[3] bytes   = params (nested protobuf)
+ *
+ * ── Battle ID extraction (from captured packets) ──────────────────────────
+ * Outbound event_battle_start_fight params: {field[1] varint = battleId}
+ * Outbound event_battle_finish_fight params: {field[1]=battleId, field[4]=3, ...}
+ * → Battle ID is ALWAYS params.field[1] varint in outbound packets.
+ *
+ * Server's inbound event_battle_start_fight has completely different params
+ * (field[1] = 60926, not a battle ID) → BattleStarted must only fire for outbound.
  */
 object GameProtocolParser {
 
@@ -23,11 +31,11 @@ object GameProtocolParser {
         "brawler_start", "brawler_finish", "finish_fight",
         "refresh_battles", "cheat_generate_battle",
         "clan_refresh_battles", "start_fight", "get_battles",
-        "event_battle_start_fight"
+        "event_battle_start_fight", "event_battle_finish_fight"
     )
 
     private val BATTLE_START_COMMANDS = setOf("start_fight", "event_battle_start_fight")
-    private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish")
+    private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish", "event_battle_finish_fight")
 
     fun parse(data: ByteArray, direction: LiveMessage.Direction): GameEvent? {
         if (data.size < 3) return null
@@ -48,31 +56,40 @@ object GameProtocolParser {
 
     private fun rawTextScan(text: String, dir: LiveMessage.Direction): GameEvent? {
         val isOut = dir == LiveMessage.Direction.OUTBOUND
-        for (cmd in BATTLE_START_COMMANDS) {
-            if (text.contains(cmd)) {
-                val id = extractIdFromRawText(text)
-                return GameEvent.BattleStarted(id ?: "?")
+
+        // ONLY fire BattleStarted for outbound packets — server echoes the same
+        // command with entirely different params that don't contain the battle ID
+        if (isOut) {
+            for (cmd in BATTLE_START_COMMANDS) {
+                if (text.contains(cmd)) {
+                    val id = extractIdFromRawText(text)
+                    return GameEvent.BattleStarted(id ?: "?")
+                }
             }
         }
+
         for (cmd in BATTLE_END_COMMANDS) {
             if (text.contains(cmd)) {
                 val id = extractIdFromRawText(text)
-                return GameEvent.BattleCommand(cmd, id, isOut)
+                return if (!isOut) GameEvent.WinConfirmed(id ?: "?")
+                else GameEvent.BattleCommand(cmd, id, isOut)
             }
         }
         return null
     }
 
     /**
-     * Skims raw ISO-8859-1 text for the most plausible battle-ID digit sequence.
-     * Prioritises longer runs first (more digits = less likely to be a flag/enum).
+     * From captured packets, SF3 battle IDs are 5–9 digit incrementing counters
+     * (e.g. 3001602). Values >= 1,000,000,000 are Unix-second timestamps or
+     * player/session IDs. Values < 10,000 are flags/enums.
      */
+    private fun isBattleIdCandidate(v: Long): Boolean =
+        v in 10_000L..999_999_999L
+
     private fun extractIdFromRawText(text: String): String? {
-        // Accept 5-9 digit sequences only; reject Unix-second-timestamps (>=1B) and ms-timestamps (13 digits)
         return Regex("[0-9]{5,9}").findAll(text)
-            .map { it.value }
-            .mapNotNull { s -> s.toLongOrNull()?.let { v -> if (isBattleIdCandidate(v)) s else null } }
-            .minByOrNull { it.toLong() }  // prefer smallest: battle counters < player/session IDs
+            .mapNotNull { m -> m.value.toLongOrNull()?.let { v -> if (isBattleIdCandidate(v)) m.value else null } }
+            .minByOrNull { it.toLong() }
     }
 
     // ── Framing ───────────────────────────────────────────────────────────
@@ -128,19 +145,32 @@ object GameProtocolParser {
 
             command == "LOGIN" && !isOut -> GameEvent.LoginIn()
 
-            command in BATTLE_START_COMMANDS -> {
-                val battleId = params?.let { extractBattleId(it) } ?: "?"
+            command in BATTLE_START_COMMANDS && isOut -> {
+                // Battle ID is always params.field[1] varint in outbound packets.
+                // The server echoes the same command name but with completely different
+                // params (field[1] = 60926, a session/room ID, not the battle counter).
+                val battleId = params?.let { extractBattleIdDirect(it) } ?: "?"
                 GameEvent.BattleStarted(battleId)
             }
 
-            command == "finish_fight" && !isOut -> {
-                // Server confirming the fight is finished = win confirmed
-                val battleId = params?.let { extractBattleId(it) }
+            command in BATTLE_START_COMMANDS && !isOut -> {
+                // Server echo — log as a generic command, do NOT emit BattleStarted
+                GameEvent.Command(command, false)
+            }
+
+            command in BATTLE_END_COMMANDS && isOut -> {
+                val battleId = params?.let { extractBattleIdDirect(it) }
+                GameEvent.BattleCommand(command, battleId, true)
+            }
+
+            command in BATTLE_END_COMMANDS && !isOut -> {
+                // Server confirmed the battle ended
+                val battleId = params?.let { extractBattleIdDirect(it) }
                 GameEvent.WinConfirmed(battleId ?: "?")
             }
 
             command in BATTLE_COMMANDS -> {
-                val battleId = params?.let { extractBattleId(it) }
+                val battleId = params?.let { extractBattleIdDirect(it) }
                 GameEvent.BattleCommand(command, battleId, isOut)
             }
 
@@ -172,65 +202,17 @@ object GameProtocolParser {
         return guid to pass
     }
 
-    // ── Battle ID extraction (multi-strategy) ─────────────────────────────
-
-    private fun extractBattleId(params: ByteArray): String? {
-        // Strategy 1: proto field scan (multiple depths)
-        val fromProto = extractIdFromProto(params, 0)
-        if (fromProto != null) return fromProto
-
-        // Strategy 2: raw text scan of param bytes
-        return extractIdFromRawText(params.toString(Charsets.ISO_8859_1))
-    }
+    // ── Battle ID extraction ───────────────────────────────────────────────
 
     /**
-     * SF3 battle ID heuristics:
-     *  - Valid range: 10,000 – 999,999,999 (battle counters; never reach 1B)
-     *  - Reject Unix second-timestamps: 1,000,000,000 – 2,000,000,000 (player/session IDs, 2001-2033)
-     *  - Reject Unix ms-timestamps: >= 10^12
-     *  - Strategy: collect all TOP-LEVEL varint candidates first; only recurse into
-     *    nested byte fields if nothing usable found at current depth.
-     *    Among multiple top-level candidates, prefer the smallest value —
-     *    battle sequence counters are far smaller than player/session IDs.
+     * Direct extraction: battle ID is always params.field[1] varint.
+     * Confirmed from captured outbound event_battle_start_fight and
+     * event_battle_finish_fight packets — no heuristics needed.
      */
-    private fun isBattleIdCandidate(v: Long): Boolean =
-        v in 10_000L..999_999_999L  // rejects flags (<10K), unix-second-ts (>=1B), ms-ts (>=10^12)
-
-    private fun extractIdFromProto(data: ByteArray, depth: Int): String? {
-        if (depth > 4) return null
+    private fun extractBattleIdDirect(params: ByteArray): String? {
         return try {
-            val fields = readProtoFields(data)
-
-            // Pass 1: collect top-level varint candidates (no recursion yet)
-            val topLevel = mutableListOf<Long>()
-            val nestedBlobs = mutableListOf<ByteArray>()
-
-            for ((_, v) in fields) {
-                when (v) {
-                    is Long -> {
-                        if (isBattleIdCandidate(v)) topLevel.add(v)
-                    }
-                    is ByteArray -> {
-                        // Pure ASCII digit string — check first before treating as proto
-                        val s = v.toString(Charsets.UTF_8)
-                        if (s.isNotEmpty() && s.all { it.isDigit() } && s.length in 5..9) {
-                            val n = s.toLongOrNull()
-                            if (n != null && isBattleIdCandidate(n)) return s
-                        }
-                        nestedBlobs.add(v)
-                    }
-                }
-            }
-
-            // Prefer smallest top-level candidate (battle counters << player/session IDs)
-            if (topLevel.isNotEmpty()) return topLevel.min().toString()
-
-            // Pass 2: recurse into nested blobs only if nothing found above
-            for (blob in nestedBlobs) {
-                val nested = extractIdFromProto(blob, depth + 1)
-                if (nested != null) return nested
-            }
-            null
+            val v = readProtoFields(params)[1]
+            if (v is Long && isBattleIdCandidate(v)) v.toString() else null
         } catch (_: Exception) { null }
     }
 
