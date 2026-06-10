@@ -134,6 +134,19 @@ class TrafficVpnService : VpnService() {
         }
     }
 
+    /**
+     * Inject a crafted packet into the game connection's outbound stream.
+     * Tries to match by connId (gameSocketId), falls back to first active TCP conn.
+     */
+    fun injectToGameSocket(data: ByteArray) {
+        val connId = AppState.viewModel.gameSocketId.value
+        if (connId != null) {
+            tcpHandler?.injectToServer(connId, data)
+        } else {
+            tcpHandler?.injectToAny(data)
+        }
+    }
+
     fun stopVpn() {
         captureJob?.cancel()
         tcpHandler?.shutdown()

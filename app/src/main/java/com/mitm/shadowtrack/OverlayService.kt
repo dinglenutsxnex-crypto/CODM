@@ -11,6 +11,7 @@ import android.widget.TextView
 import androidx.lifecycle.Observer
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.mitm.shadowtrack.model.ConnectionViewModel
 import com.mitm.shadowtrack.model.GameEvent
 
 class OverlayService : Service() {
@@ -29,6 +30,10 @@ class OverlayService : Service() {
 
     private var savedX: Int = 0
     private var savedY: Int = 120
+
+    private var currentBattleId: String? = null
+
+    // ── Event log observer ────────────────────────────────────────────────
 
     private val eventObserver = Observer<List<GameEvent>> { newList ->
         val prevSize = events.size
@@ -49,12 +54,49 @@ class OverlayService : Service() {
         }
     }
 
+    // ── Battle state observer ──────────────────────────────────────────────
+
+    private val battleObserver = Observer<ConnectionViewModel.BattleState?> { state ->
+        currentBattleId = state?.battleId
+        updateEventsPanel()
+    }
+
     private fun isAtBottom(rv: RecyclerView): Boolean {
         val lm = rv.layoutManager as? LinearLayoutManager ?: return true
         val last = lm.findLastVisibleItemPosition()
-        val total = adapter.itemCount
-        return last >= total - 2
+        return last >= adapter.itemCount - 2
     }
+
+    // ── Events panel sync ──────────────────────────────────────────────────
+
+    private fun updateEventsPanel() {
+        val v = overlayView ?: return
+        val statusTv   = v.findViewById<TextView>(R.id.tv_battle_status)  ?: return
+        val idTv       = v.findViewById<TextView>(R.id.tv_battle_id)      ?: return
+        val iconTv     = v.findViewById<TextView>(R.id.tv_battle_icon)    ?: return
+        val winBtn     = v.findViewById<TextView>(R.id.btn_win_battle)    ?: return
+        val winStatus  = v.findViewById<TextView>(R.id.tv_win_status)     ?: return
+
+        val id = currentBattleId
+        if (id != null) {
+            iconTv.text = "⚔️"
+            statusTv.text = "Battle active"
+            statusTv.setTextColor(Color.parseColor("#FF3FB950"))
+            idTv.text = "battle_id: $id"
+            idTv.visibility = View.VISIBLE
+            winBtn.visibility = View.VISIBLE
+            winStatus.visibility = View.GONE
+        } else {
+            iconTv.text = "🎮"
+            statusTv.text = "No active battle"
+            statusTv.setTextColor(Color.parseColor("#FF8B949E"))
+            idTv.visibility = View.GONE
+            winBtn.visibility = View.GONE
+            winStatus.visibility = View.GONE
+        }
+    }
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -69,6 +111,7 @@ class OverlayService : Service() {
         adapter = GameEventAdapter(events)
         setupOverlay()
         AppState.viewModel.gameEvents.observeForever(eventObserver)
+        AppState.viewModel.currentBattle.observeForever(battleObserver)
     }
 
     // ── WindowManager params ──────────────────────────────────────────────
@@ -76,18 +119,20 @@ class OverlayService : Service() {
     private fun dp(value: Float): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
 
-    private fun makeParams(w: Int = dp(360f),
-                           h: Int = WindowManager.LayoutParams.WRAP_CONTENT,
-                           x: Int = savedX, y: Int = savedY) =
-        WindowManager.LayoutParams(
-            w, h,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            this.x = x; this.y = y
-        }
+    private fun makeParams(
+        w: Int = dp(360f),
+        h: Int = WindowManager.LayoutParams.WRAP_CONTENT,
+        x: Int = savedX,
+        y: Int = savedY
+    ) = WindowManager.LayoutParams(
+        w, h,
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+        PixelFormat.TRANSLUCENT
+    ).apply {
+        gravity = Gravity.TOP or Gravity.END
+        this.x = x; this.y = y
+    }
 
     // ── Main overlay ──────────────────────────────────────────────────────
 
@@ -104,16 +149,19 @@ class OverlayService : Service() {
         val params = makeParams()
         attachDrag(view.findViewById(R.id.overlay_header), view, params)
 
+        // Minimize
         view.findViewById<TextView>(R.id.btn_minimize).setOnClickListener {
             removeOverlay(); showMini()
         }
 
+        // Triple-dot menu
         val menuPanel = view.findViewById<View>(R.id.panel_menu)
         view.findViewById<TextView>(R.id.btn_menu).setOnClickListener {
             menuPanel.visibility =
                 if (menuPanel.visibility == View.GONE) View.VISIBLE else View.GONE
         }
 
+        // Clear logs
         view.findViewById<TextView>(R.id.menu_clear).setOnClickListener {
             val sz = events.size
             events.clear()
@@ -123,12 +171,57 @@ class OverlayService : Service() {
             menuPanel.visibility = View.GONE
         }
 
+        // Download logs
         view.findViewById<TextView>(R.id.menu_download).setOnClickListener {
             menuPanel.visibility = View.GONE
             val id = AppState.viewModel.gameSocketId.value
             val msgs = if (id != null) AppState.viewModel.getMessages(id) else emptyList()
             LogDownloader.downloadAndShare(this, msgs)
         }
+
+        // ── Tabs ──────────────────────────────────────────────────────────
+        val tabLogs   = view.findViewById<TextView>(R.id.tab_logs)
+        val tabEvents = view.findViewById<TextView>(R.id.tab_events)
+        val panelEvents = view.findViewById<View>(R.id.panel_events)
+
+        tabLogs.setOnClickListener {
+            rv.visibility = View.VISIBLE
+            panelEvents.visibility = View.GONE
+            tabLogs.setTextColor(Color.parseColor("#FF58A6FF"))
+            tabLogs.setBackgroundColor(Color.parseColor("#FF0D1117"))
+            tabEvents.setTextColor(Color.parseColor("#FF8B949E"))
+            tabEvents.setBackgroundColor(Color.TRANSPARENT)
+        }
+
+        tabEvents.setOnClickListener {
+            rv.visibility = View.GONE
+            panelEvents.visibility = View.VISIBLE
+            tabEvents.setTextColor(Color.parseColor("#FF58A6FF"))
+            tabEvents.setBackgroundColor(Color.parseColor("#FF0D1117"))
+            tabLogs.setTextColor(Color.parseColor("#FF8B949E"))
+            tabLogs.setBackgroundColor(Color.TRANSPARENT)
+            updateEventsPanel()
+        }
+
+        // ── Win Battle button ─────────────────────────────────────────────
+        view.findViewById<TextView>(R.id.btn_win_battle).setOnClickListener {
+            val id = currentBattleId ?: return@setOnClickListener
+            val idLong = id.toLongOrNull() ?: return@setOnClickListener
+            val winStatus = view.findViewById<TextView>(R.id.tv_win_status)
+            try {
+                val packet = com.mitm.shadowtrack.net.PacketInjector.buildFinishFight(idLong)
+                TrafficVpnService.instance?.injectToGameSocket(packet)
+                winStatus.text = "✓ finish_fight injected"
+                winStatus.setTextColor(Color.parseColor("#FF3FB950"))
+            } catch (e: Exception) {
+                winStatus.text = "✗ ${e.message}"
+                winStatus.setTextColor(Color.parseColor("#FFFF4444"))
+            }
+            winStatus.visibility = View.VISIBLE
+        }
+
+        // Sync current battle state immediately
+        updateEventsPanel()
 
         windowManager.addView(view, params)
     }
@@ -189,7 +282,7 @@ class OverlayService : Service() {
         miniView = null
     }
 
-    // ── Drag ─────────────────────────────────────────────────────────────
+    // ── Drag ──────────────────────────────────────────────────────────────
 
     private fun attachDrag(handle: View, root: View, params: WindowManager.LayoutParams) {
         var startX = 0; var startY = 0
@@ -217,18 +310,17 @@ class OverlayService : Service() {
                     }
                     true
                 }
-                MotionEvent.ACTION_UP -> {
-                    dragging
-                }
+                MotionEvent.ACTION_UP -> dragging
                 else -> false
             }
         }
     }
 
-    // ── Lifecycle ─────────────────────────────────────────────────────────
+    // ── onDestroy ─────────────────────────────────────────────────────────
 
     override fun onDestroy() {
         AppState.viewModel.gameEvents.removeObserver(eventObserver)
+        AppState.viewModel.currentBattle.removeObserver(battleObserver)
         removeOverlay()
         removeMini()
         super.onDestroy()
@@ -257,9 +349,9 @@ class GameEventAdapter(private val items: List<GameEvent>) :
 
         val colorHex = when (ev) {
             is GameEvent.HandshakeOut,
-            is GameEvent.HandshakeIn  -> "#58A6FF"
-            is GameEvent.LoginOut     -> "#F0883E"
-            is GameEvent.LoginIn      -> "#3FB950"
+            is GameEvent.HandshakeIn   -> "#58A6FF"
+            is GameEvent.LoginOut      -> "#F0883E"
+            is GameEvent.LoginIn       -> "#3FB950"
             is GameEvent.BattleStarted -> "#FF4444"
             is GameEvent.BattleCommand -> "#D29922"
             else                       -> "#444C56"

@@ -22,13 +22,57 @@ object GameProtocolParser {
     private val BATTLE_COMMANDS = setOf(
         "brawler_start", "brawler_finish", "finish_fight",
         "refresh_battles", "cheat_generate_battle",
-        "clan_refresh_battles", "start_fight", "get_battles"
+        "clan_refresh_battles", "start_fight", "get_battles",
+        "event_battle_start_fight"
     )
+
+    private val BATTLE_START_COMMANDS = setOf("start_fight", "event_battle_start_fight")
+    private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish")
 
     fun parse(data: ByteArray, direction: LiveMessage.Direction): GameEvent? {
         if (data.size < 3) return null
-        val proto = extractPayload(data) ?: return null
-        return try { parseEnvelope(proto, direction) } catch (_: Exception) { null }
+
+        // ── Proto parsing first (most accurate — resolves varints properly) ────
+        val proto = extractPayload(data)
+        if (proto != null) {
+            val protoResult = try { parseEnvelope(proto, direction) } catch (_: Exception) { null }
+            if (protoResult != null) return protoResult
+        }
+
+        // ── Raw-text fallback — catches commands in non-standard framing ────
+        val rawText = data.toString(Charsets.ISO_8859_1)
+        return rawTextScan(rawText, direction)
+    }
+
+    // ── Raw-text fast scan (skims every byte for command strings) ─────────
+
+    private fun rawTextScan(text: String, dir: LiveMessage.Direction): GameEvent? {
+        val isOut = dir == LiveMessage.Direction.OUTBOUND
+        for (cmd in BATTLE_START_COMMANDS) {
+            if (text.contains(cmd)) {
+                val id = extractIdFromRawText(text)
+                return GameEvent.BattleStarted(id ?: "?")
+            }
+        }
+        for (cmd in BATTLE_END_COMMANDS) {
+            if (text.contains(cmd)) {
+                val id = extractIdFromRawText(text)
+                return GameEvent.BattleCommand(cmd, id, isOut)
+            }
+        }
+        return null
+    }
+
+    /**
+     * Skims raw ISO-8859-1 text for the most plausible battle-ID digit sequence.
+     * Prioritises longer runs first (more digits = less likely to be a flag/enum).
+     */
+    private fun extractIdFromRawText(text: String): String? {
+        val candidates = Regex("[0-9]{5,12}").findAll(text)
+            .map { it.value }
+            .filter { it.toLongOrNull()?.let { v -> v > 10_000L } == true }
+            .sortedByDescending { it.length }
+        return candidates.firstOrNull()
     }
 
     // ── Framing ───────────────────────────────────────────────────────────
@@ -61,7 +105,6 @@ object GameProtocolParser {
 
         return when {
             command == "HANDSHAKE" && isOut -> {
-                // field[3] → field[1] = server name string ("SFA-NEBU-1")
                 val name = params?.let { p ->
                     (readProtoFields(p)[1] as? ByteArray)?.toString(Charsets.UTF_8)
                 } ?: "SFA-NEBU-1"
@@ -69,11 +112,8 @@ object GameProtocolParser {
             }
 
             command == "HANDSHAKE" && !isOut -> {
-                // field[3] → field[2] = session token bytes
-                // (or nested one more level: field[3] → field[2] → field[2])
                 val token = params?.let { p ->
                     val top = (readProtoFields(p)[2] as? ByteArray)
-                    // Try one level deeper first
                     top?.let { readProtoFields(it)[2] as? ByteArray }
                         ?.toString(Charsets.UTF_8)
                         ?: top?.toString(Charsets.UTF_8)
@@ -88,7 +128,7 @@ object GameProtocolParser {
 
             command == "LOGIN" && !isOut -> GameEvent.LoginIn()
 
-            command == "start_fight" && isOut -> {
+            command in BATTLE_START_COMMANDS -> {
                 val battleId = params?.let { extractBattleId(it) } ?: "?"
                 GameEvent.BattleStarted(battleId)
             }
@@ -104,21 +144,10 @@ object GameProtocolParser {
 
     // ── Login extraction ──────────────────────────────────────────────────
 
-    /**
-     * Confirmed structure from real capture (user_2.bin decompressed):
-     *   outer.field[3] = params
-     *   params.field[2] = auth_wrapper   (tag 12, length 98)
-     *   auth_wrapper.field[2] = json     (tag 12, length 94)
-     *   json = '{"login":"<guid>","password":"<md5>"}'
-     *
-     * That's exactly 2 levels of field[2] nesting — NOT 3.
-     */
     private fun extractLoginCredentials(params: ByteArray?): Pair<String, String> {
         if (params == null) return "?" to "?"
         return try {
-            // Level 1: params.field[2] = auth_wrapper
             val authWrapper = (readProtoFields(params)[2] as? ByteArray) ?: return scanRaw(params)
-            // Level 2: auth_wrapper.field[2] = JSON bytes
             val jsonBytes   = (readProtoFields(authWrapper)[2] as? ByteArray) ?: return scanRaw(params)
             val json = jsonBytes.toString(Charsets.UTF_8)
             val guid = extractJsonValue(json, "login")    ?: return scanRaw(params)
@@ -137,36 +166,47 @@ object GameProtocolParser {
         return guid to pass
     }
 
+    // ── Battle ID extraction (multi-strategy) ─────────────────────────────
+
     private fun extractBattleId(params: ByteArray): String? {
+        // Strategy 1: proto field scan (multiple depths)
+        val fromProto = extractIdFromProto(params, 0)
+        if (fromProto != null) return fromProto
+
+        // Strategy 2: raw text scan of param bytes
+        return extractIdFromRawText(params.toString(Charsets.ISO_8859_1))
+    }
+
+    private fun extractIdFromProto(data: ByteArray, depth: Int): String? {
+        if (depth > 4) return null
         return try {
-            val fields = readProtoFields(params)
+            val fields = readProtoFields(data)
+            // Collect all candidate integers first, prefer longer ones
+            val candidates = mutableListOf<Long>()
             for ((_, v) in fields) {
                 when (v) {
-                    is Long -> if (v in 1_000_000L..99_999_999L) return v.toString()
+                    is Long -> {
+                        // Accept any plausible positive integer that isn't a tiny flag/enum
+                        if (v > 10_000L) candidates.add(v)
+                    }
                     is ByteArray -> {
+                        // Check if it's a pure digit string
                         val s = v.toString(Charsets.UTF_8)
-                        if (s.matches(Regex("[0-9]{6,8}"))) return s
-                        // Recurse one level into nested proto
-                        val nested = readProtoFields(v)
-                        for ((_, nv) in nested) {
-                            if (nv is Long && nv in 1_000_000L..99_999_999L)
-                                return nv.toString()
+                        if (s.isNotEmpty() && s.all { it.isDigit() } && s.length in 5..12) {
+                            return s
                         }
+                        // Recurse into nested proto
+                        val nested = extractIdFromProto(v, depth + 1)
+                        if (nested != null) return nested
                     }
                 }
             }
-            null
+            candidates.maxOrNull()?.toString()
         } catch (_: Exception) { null }
     }
 
     // ── Minimal protobuf reader ───────────────────────────────────────────
 
-    /**
-     * Returns Map<fieldNumber, value> where value is:
-     *   Long      for varint (wire type 0)
-     *   ByteArray for length-delimited (wire type 2)
-     * 64-bit and 32-bit fixed fields are skipped.
-     */
     fun readProtoFields(data: ByteArray): Map<Int, Any> {
         val result = LinkedHashMap<Int, Any>()
         var pos = 0
@@ -189,8 +229,8 @@ object GameProtocolParser {
                     result[fieldNum] = data.copyOfRange(pos, pos + bytes)
                     pos += bytes
                 }
-                1 -> pos += 8  // 64-bit fixed — skip
-                5 -> pos += 4  // 32-bit fixed — skip
+                1 -> pos += 8
+                5 -> pos += 4
                 else -> break
             }
         }
@@ -211,10 +251,10 @@ object GameProtocolParser {
         return null
     }
 
-    // ── Raw deflate (wbits = -15, no zlib header) ─────────────────────────
+    // ── Raw deflate ───────────────────────────────────────────────────────
 
     private fun rawDeflate(data: ByteArray): ByteArray? = try {
-        val inflater = Inflater(true)   // true = nowrap = raw deflate
+        val inflater = Inflater(true)
         inflater.setInput(data)
         val out = java.io.ByteArrayOutputStream(data.size * 3)
         val buf = ByteArray(8192)

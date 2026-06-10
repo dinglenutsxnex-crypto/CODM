@@ -22,14 +22,17 @@ class ConnectionViewModel : ViewModel() {
     private val _stats = MutableLiveData(Stats())
     val stats: LiveData<Stats> = _stats
 
-    // The connection that sent the first HANDSHAKE — this is the game socket
     private val _gameSocketId = MutableLiveData<String?>(null)
     val gameSocketId: LiveData<String?> = _gameSocketId
 
-    // Parsed game events emitted to the overlay
     private val _gameEvents = MutableLiveData<List<GameEvent>>(emptyList())
     val gameEvents: LiveData<List<GameEvent>> = _gameEvents
     private val gameEventList = mutableListOf<GameEvent>()
+
+    data class BattleState(val battleId: String, val startTime: Long = System.currentTimeMillis())
+
+    private val _currentBattle = MutableLiveData<BattleState?>(null)
+    val currentBattle: LiveData<BattleState?> = _currentBattle
 
     data class Stats(
         val totalConnections: Int = 0,
@@ -83,13 +86,11 @@ class ConnectionViewModel : ViewModel() {
                 }
                 conn.lastActivityTime = System.currentTimeMillis()
 
-                // Auto-detect game socket by HANDSHAKE string in payload
                 val text = String(message.data, Charsets.ISO_8859_1)
                 if (text.contains("HANDSHAKE")) {
                     _gameSocketId.postValue(id)
                 }
 
-                // Try to parse as SF3 protocol and emit a game event
                 val event = GameProtocolParser.parse(message.data, message.direction)
                 if (event != null) {
                     synchronized(gameEventList) {
@@ -97,6 +98,20 @@ class ConnectionViewModel : ViewModel() {
                         if (gameEventList.size > 200) gameEventList.removeAt(0)
                     }
                     _gameEvents.postValue(gameEventList.toList())
+
+                    when (event) {
+                        is GameEvent.BattleStarted -> {
+                            if (event.battleId != "?") {
+                                _currentBattle.postValue(BattleState(event.battleId))
+                            }
+                        }
+                        is GameEvent.BattleCommand -> {
+                            if (event.name == "finish_fight" || event.name == "brawler_finish") {
+                                _currentBattle.postValue(null)
+                            }
+                        }
+                        else -> {}
+                    }
                 }
 
                 publishUpdate()
@@ -116,6 +131,7 @@ class ConnectionViewModel : ViewModel() {
         _gameSocketId.postValue(null)
         synchronized(gameEventList) { gameEventList.clear() }
         _gameEvents.postValue(emptyList())
+        _currentBattle.postValue(null)
         publishUpdate()
     }
 

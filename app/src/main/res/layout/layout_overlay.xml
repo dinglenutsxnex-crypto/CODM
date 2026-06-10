@@ -19,7 +19,6 @@
         android:paddingStart="12dp"
         android:paddingEnd="4dp">
 
-        <!-- Drag grip + title -->
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -31,7 +30,6 @@
             android:fontFamily="monospace"
             android:letterSpacing="0.1" />
 
-        <!-- Live event count badge -->
         <TextView
             android:id="@+id/tv_event_count"
             android:layout_width="wrap_content"
@@ -46,7 +44,6 @@
             android:paddingHorizontal="5dp"
             android:layout_marginEnd="8dp" />
 
-        <!-- Triple-dot menu trigger -->
         <TextView
             android:id="@+id/btn_menu"
             android:layout_width="40dp"
@@ -58,7 +55,6 @@
             android:clickable="true"
             android:focusable="true" />
 
-        <!-- Minimize -->
         <TextView
             android:id="@+id/btn_minimize"
             android:layout_width="40dp"
@@ -114,13 +110,128 @@
 
     </LinearLayout>
 
-    <!-- ── Event list ── -->
+    <!-- ── Tab row ── -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="34dp"
+        android:orientation="horizontal"
+        android:background="#FF161B22">
+
+        <TextView
+            android:id="@+id/tab_logs"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="LOGS"
+            android:textColor="#FF58A6FF"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:background="#FF0D1117"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:background="#FF30363D" />
+
+        <TextView
+            android:id="@+id/tab_events"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="EVENTS"
+            android:textColor="#FF8B949E"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:clickable="true"
+            android:focusable="true" />
+
+    </LinearLayout>
+
+    <!-- ── Logs tab: event list ── -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rv_events"
         android:layout_width="match_parent"
         android:layout_height="300dp"
         android:scrollbars="none"
         android:overScrollMode="never" />
+
+    <!-- ── Events tab: game state panel ── -->
+    <LinearLayout
+        android:id="@+id/panel_events"
+        android:layout_width="match_parent"
+        android:layout_height="300dp"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="20dp"
+        android:visibility="gone">
+
+        <!-- Battle state icon + label -->
+        <TextView
+            android:id="@+id/tv_battle_icon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🎮"
+            android:textSize="36sp"
+            android:gravity="center"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/tv_battle_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="No active battle"
+            android:textColor="#FF8B949E"
+            android:textSize="13sp"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:layout_marginBottom="6dp" />
+
+        <TextView
+            android:id="@+id/tv_battle_id"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#FFD29922"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:layout_marginBottom="20dp"
+            android:visibility="gone" />
+
+        <!-- Win Battle button -->
+        <TextView
+            android:id="@+id/btn_win_battle"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="⚔  WIN BATTLE"
+            android:textColor="#FF0D1117"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:background="#FF3FB950"
+            android:clickable="true"
+            android:focusable="true"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tv_win_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#FF58A6FF"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:layout_marginTop="10dp"
+            android:visibility="gone" />
+
+    </LinearLayout>
 
     <!-- ── Status bar ── -->
     <TextView

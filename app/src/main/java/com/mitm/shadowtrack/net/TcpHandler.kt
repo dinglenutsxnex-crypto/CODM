@@ -381,6 +381,24 @@ class TcpHandler(
         try { conn.channel?.close() } catch (_: Exception) {}
     }
 
+    /**
+     * Inject raw bytes directly into the outbound queue of the given connection.
+     * Used to send crafted packets (e.g. finish_fight) through an existing session.
+     */
+    fun injectToServer(connId: String, data: ByteArray) {
+        connections[connId]?.let { conn ->
+            if (conn.status == TcpStatus.ESTABLISHED) {
+                conn.outboundQueue.trySend(data)
+            }
+        }
+    }
+
+    /** Inject to the first ESTABLISHED connection (game socket heuristic). */
+    fun injectToAny(data: ByteArray) {
+        connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }
+            ?.outboundQueue?.trySend(data)
+    }
+
     fun shutdown() {
         scope.cancel()
         connections.values.forEach {
