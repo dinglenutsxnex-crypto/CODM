@@ -170,6 +170,13 @@ class ConnectionViewModel : ViewModel() {
                             if (event.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight")) {
                                 _currentBattle.postValue(null)
                             }
+                            // SF3 opens a NEW TCP connection for event_battle_finish_fight —
+                            // different from the start_fight connection (which is already closed).
+                            // Capture THAT connection as battleSocketId so any WIN injection
+                            // pressed just before (or at the same moment) goes to the right socket.
+                            if (event.isOutbound && event.name == "event_battle_finish_fight") {
+                                _battleSocketId.postValue(id)
+                            }
                         }
                         else -> {}
                     }
