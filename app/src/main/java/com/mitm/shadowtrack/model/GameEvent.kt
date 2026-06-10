@@ -15,7 +15,12 @@ sealed class GameEvent {
     class LoginIn : GameEvent()
     data class Command(val name: String, val isOutbound: Boolean) : GameEvent()
     data class BattleCommand(val name: String, val battleId: String?, val isOutbound: Boolean) : GameEvent()
-    data class BattleStarted(val battleId: String) : GameEvent()
+    /**
+     * @param commandName The raw SF3 command that triggered this event.
+     *   "event_battle_start_fight" = hero/PVP fight (high priority — always overrides current battle)
+     *   "start_fight"              = clan/brawler fight (low priority — only set if no battle active)
+     */
+    data class BattleStarted(val battleId: String, val commandName: String = "start_fight") : GameEvent()
     data class WinConfirmed(val battleId: String) : GameEvent()
 
     val label: String get() = when (this) {
@@ -25,7 +30,7 @@ sealed class GameEvent {
         is LoginIn       -> "<< LOGIN OK"
         is Command       -> "${if (isOutbound) ">>" else "<<"} ${name}"
         is BattleCommand -> "${if (isOutbound) ">>" else "<<"} ${name}${if (battleId != null) "  #$battleId" else ""}"
-        is BattleStarted -> "!! BATTLE STARTED  #${battleId}"
+        is BattleStarted -> "!! BATTLE STARTED  #${battleId}${if (commandName == "event_battle_start_fight") " [FIGHT]" else " [clan]"}"
         is WinConfirmed  -> "## WIN CONFIRMED  #${battleId}"
     }
 

@@ -115,31 +115,35 @@ class OverlayService : Service() {
         val id = currentBattleId
         when {
             id != null -> {
-                // Active battle waiting for a win injection
+                // Active battle waiting for a win injection.
+                // This is the ONLY branch that resets winStatus — a new battle starting
+                // means any previous injection result is stale and should be cleared.
                 statusTv.text = "BATTLE ACTIVE"
                 statusTv.setTextColor(Color.parseColor("#FF3FB950"))
                 idTv.text = "battle_id: $id"
                 idTv.visibility = View.VISIBLE
                 winBtn.visibility = View.VISIBLE
-                // Reset any old win-status text when a new battle starts
                 winStatus.visibility = View.GONE
                 lastWinConfirmedId = null
             }
             lastWinConfirmedId != null -> {
-                // Server confirmed the win
+                // Server confirmed the win — leave winStatus alone so the
+                // ">> injected / SENT" or error text stays readable.
                 statusTv.text = "WIN CONFIRMED"
                 statusTv.setTextColor(Color.parseColor("#FF3FB950"))
                 idTv.text = "battle_id: $lastWinConfirmedId  /  server ACK"
                 idTv.visibility = View.VISIBLE
                 winBtn.visibility = View.GONE
-                winStatus.visibility = View.GONE
+                // winStatus intentionally NOT touched here
             }
             else -> {
+                // No battle and no recent win — leave winStatus alone too so any
+                // FAIL error from the last injection attempt stays visible.
                 statusTv.text = "NO ACTIVE BATTLE"
                 statusTv.setTextColor(Color.parseColor("#FF8B949E"))
                 idTv.visibility = View.GONE
                 winBtn.visibility = View.GONE
-                winStatus.visibility = View.GONE
+                // winStatus intentionally NOT touched here
             }
         }
     }

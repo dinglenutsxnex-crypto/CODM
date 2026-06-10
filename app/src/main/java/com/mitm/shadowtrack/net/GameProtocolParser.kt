@@ -58,13 +58,19 @@ object GameProtocolParser {
         val isOut = dir == LiveMessage.Direction.OUTBOUND
 
         // ONLY fire BattleStarted for outbound packets — server echoes the same
-        // command with entirely different params that don't contain the battle ID
+        // command with entirely different params that don't contain the battle ID.
+        // Check event_battle_start_fight FIRST because start_fight is a substring of it —
+        // a set iteration order is undefined so we'd risk misclassifying the high-priority
+        // hero fight as a low-priority clan fight if start_fight matched first.
         if (isOut) {
-            for (cmd in BATTLE_START_COMMANDS) {
-                if (text.contains(cmd)) {
-                    val id = extractIdFromRawText(text)
-                    return GameEvent.BattleStarted(id ?: "?")
-                }
+            val cmd = when {
+                text.contains("event_battle_start_fight") -> "event_battle_start_fight"
+                text.contains("start_fight")              -> "start_fight"
+                else                                      -> null
+            }
+            if (cmd != null) {
+                val id = extractIdFromRawText(text)
+                return GameEvent.BattleStarted(id ?: "?", cmd)
             }
         }
 
@@ -164,8 +170,11 @@ object GameProtocolParser {
                 // Battle ID is always params.field[1] varint in outbound packets.
                 // The server echoes the same command name but with completely different
                 // params (field[1] = 60926, a session/room ID, not the battle counter).
+                // Pass commandName through so the ViewModel can apply priority logic:
+                // event_battle_start_fight (hero fight) always overrides currentBattle;
+                // start_fight (clan/brawler) only sets if currentBattle is null.
                 val battleId = params?.let { extractBattleIdDirect(it) } ?: "?"
-                GameEvent.BattleStarted(battleId)
+                GameEvent.BattleStarted(battleId, command)
             }
 
             command in BATTLE_START_COMMANDS && !isOut -> {

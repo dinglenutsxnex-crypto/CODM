@@ -521,13 +521,20 @@ class TcpHandler(
         val payload = if (conn.isWebSocket) wrapInWsFrame(data) else data
         return try {
             conn.writeLock.lock()
-            try {
+            val result = try {
                 val buf = java.nio.ByteBuffer.wrap(payload)
                 while (buf.hasRemaining()) ch.write(buf)
                 "SENT ${payload.size}B  ws=${conn.isWebSocket}"
             } finally {
                 conn.writeLock.unlock()
             }
+            // Log the injected packet so it appears in LOGS alongside the server's
+            // response — this is the "exited VPN" log entry the user can diff against
+            // what the game originally sent (or against what we built in PacketInjector).
+            // We log `data` (the unframed SF3 bytes), not `payload` (which may be
+            // WS-wrapped), so GameProtocolParser can parse the SF3 envelope correctly.
+            onMessage(conn.connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
+            result
         } catch (e: Exception) {
             "FAIL: write error: ${e.message}"
         }

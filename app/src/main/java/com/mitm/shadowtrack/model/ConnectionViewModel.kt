@@ -139,18 +139,29 @@ class ConnectionViewModel : ViewModel() {
 
                     when (event) {
                         is GameEvent.BattleStarted -> {
-                            // Only set if no battle is currently active — prevents a second
-                            // BattleStarted packet (e.g. server echo with a player/session ID)
-                            // from overwriting the correct battle counter we already captured.
-                            if (event.battleId != "?" && _currentBattle.value == null) {
-                                _currentBattle.postValue(BattleState(event.battleId))
-                                // Record WHICH connection carried this battle packet — may differ
-                                // from gameSocketId (the HANDSHAKE conn) if SF3 uses separate conns.
-                                _battleSocketId.postValue(id)
+                            if (event.battleId != "?") {
+                                // event_battle_start_fight = hero/PVP fight — ALWAYS overrides
+                                // whatever is in currentBattle. This prevents a background clan
+                                // fight (start_fight) that fired first from locking us into the
+                                // wrong battle ID when the actual fight starts.
+                                // start_fight = clan/brawler — lower priority, only set if idle.
+                                val isHeroFight = event.commandName == "event_battle_start_fight"
+                                if (isHeroFight || _currentBattle.value == null) {
+                                    _currentBattle.postValue(BattleState(event.battleId))
+                                    // Record WHICH connection carried this battle packet — may
+                                    // differ from gameSocketId if SF3 uses separate conns.
+                                    _battleSocketId.postValue(id)
+                                }
                             }
                         }
                         is GameEvent.WinConfirmed -> {
-                            _currentBattle.postValue(null)
+                            // Only clear the active battle if the confirmed ID matches what
+                            // we're tracking. Prevents a background clan-fight WinConfirmed
+                            // from wiping the state for the hero fight we actually want to win.
+                            val tracked = _currentBattle.value?.battleId
+                            if (tracked == null || tracked == event.battleId) {
+                                _currentBattle.postValue(null)
+                            }
                         }
                         is GameEvent.BattleCommand -> {
                             if (event.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight")) {
@@ -195,18 +206,24 @@ class ConnectionViewModel : ViewModel() {
     fun emitEvent(event: GameEvent) {
         synchronized(gameEventList) {
             gameEventList.add(event)
-            if (gameEventList.size > 200) gameEventList.removeAt(0)
+            if (gameEventList.size > 2000) gameEventList.removeAt(0)
         }
         _gameEvents.postValue(gameEventList.toList())
 
         when (event) {
             is GameEvent.BattleStarted -> {
-                if (event.battleId != "?" && _currentBattle.value == null) {
-                    _currentBattle.postValue(BattleState(event.battleId))
+                if (event.battleId != "?") {
+                    val isHeroFight = event.commandName == "event_battle_start_fight"
+                    if (isHeroFight || _currentBattle.value == null) {
+                        _currentBattle.postValue(BattleState(event.battleId))
+                    }
                 }
             }
             is GameEvent.WinConfirmed -> {
-                _currentBattle.postValue(null)
+                val tracked = _currentBattle.value?.battleId
+                if (tracked == null || tracked == event.battleId) {
+                    _currentBattle.postValue(null)
+                }
             }
             is GameEvent.BattleCommand -> {
                 if (event.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight")) {
