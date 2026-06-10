@@ -5,9 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.mitm.shadowtrack.model.*
 import com.mitm.shadowtrack.net.*
@@ -93,8 +95,14 @@ class TrafficVpnService : VpnService() {
 
             captureJob = scope.launch { captureLoop(fd) }
             viewModel.setVpnRunning(true)
-            startForeground(NOTIF_ID, buildNotification())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIF_ID, buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(NOTIF_ID, buildNotification())
+            }
         } catch (e: Exception) {
+            Log.e("TrafficVpnService", "Failed to start VPN", e)
             stopVpn()
         }
     }
