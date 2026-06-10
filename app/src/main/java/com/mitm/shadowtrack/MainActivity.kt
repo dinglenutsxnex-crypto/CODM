@@ -11,110 +11,111 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.mitm.shadowtrack.databinding.ActivityMainBinding
-import com.mitm.shadowtrack.model.ConnectionEntry
+import com.mitm.shadowtrack.model.ConnectionStatus
 import com.mitm.shadowtrack.model.ConnectionViewModel
 import com.mitm.shadowtrack.model.ConnectionViewModelFactory
-import com.mitm.shadowtrack.model.Protocol
-import com.mitm.shadowtrack.ui.ConnectionAdapter
-import com.mitm.shadowtrack.ui.SocketDetailActivity
+import com.mitm.shadowtrack.ui.LiveMessageAdapter
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var viewModel: ConnectionViewModel
-    private lateinit var adapter: ConnectionAdapter
+    private lateinit var messageAdapter: LiveMessageAdapter
 
     private val VPN_REQUEST_CODE = 100
-    private var filterProtocol: Protocol? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         setSupportActionBar(binding.toolbar)
+        supportActionBar?.setDisplayShowTitleEnabled(false)
 
         viewModel = ViewModelProvider(this, ConnectionViewModelFactory())[ConnectionViewModel::class.java]
 
-        setupRecyclerView()
-        setupChipFilters()
-        observeViewModel()
+        messageAdapter = LiveMessageAdapter()
+        binding.rvMessages.apply {
+            layoutManager = LinearLayoutManager(this@MainActivity).also {
+                it.stackFromEnd = true
+            }
+            adapter = messageAdapter
+        }
 
         binding.fabToggleVpn.setOnClickListener {
-            if (viewModel.vpnRunning.value == true) {
-                stopVpn()
-            } else {
-                requestVpnPermission()
-            }
+            if (viewModel.vpnRunning.value == true) stopVpn() else requestVpnPermission()
         }
-    }
 
-    private fun setupRecyclerView() {
-        adapter = ConnectionAdapter { entry -> openDetail(entry) }
-        binding.rvConnections.apply {
-            layoutManager = LinearLayoutManager(this@MainActivity)
-            adapter = this@MainActivity.adapter
-            setHasFixedSize(false)
-        }
-    }
-
-    private fun setupChipFilters() {
-        binding.chipAll.setOnClickListener { filterProtocol = null; applyFilter() }
-        binding.chipTcp.setOnClickListener { filterProtocol = Protocol.TCP; applyFilter() }
-        binding.chipDns.setOnClickListener { filterProtocol = Protocol.DNS; applyFilter() }
-        binding.chipUdp.setOnClickListener { filterProtocol = Protocol.UDP; applyFilter() }
-        binding.chipWs.setOnClickListener  { filterProtocol = Protocol.WEBSOCKET; applyFilter() }
-    }
-
-    private fun applyFilter() {
-        val all = viewModel.connections.value ?: return
-        val filtered = when (filterProtocol) {
-            null               -> all
-            Protocol.WEBSOCKET -> all.filter { it.isWebSocket }
-            else               -> all.filter { it.protocol == filterProtocol }
-        }
-        adapter.submitList(filtered.toList())
-        updateEmptyState(filtered)
+        observeViewModel()
     }
 
     private fun observeViewModel() {
-        viewModel.connections.observe(this) { connections ->
-            applyFilter()
-        }
-
         viewModel.vpnRunning.observe(this) { running ->
-            binding.fabToggleVpn.apply {
-                setImageResource(if (running) android.R.drawable.ic_media_pause
-                                 else android.R.drawable.ic_media_play)
-                contentDescription = if (running) "Stop VPN" else "Start VPN"
-            }
-            binding.tvStatus.text = if (running) {
-                "● LIVE — Monitoring ${TrafficVpnService.TARGET_PACKAGE}"
-            } else {
-                "○ IDLE — Tap ▶ to start monitoring"
-            }
-            binding.tvStatus.setTextColor(
-                getColor(if (running) R.color.green_active else R.color.text_secondary)
+            binding.fabToggleVpn.setImageResource(
+                if (running) android.R.drawable.ic_media_pause
+                else android.R.drawable.ic_media_play
             )
+            if (!running) {
+                binding.tvStatus.text = "○ IDLE — Tap ▶ to start"
+                binding.tvStatus.setTextColor(getColor(R.color.text_secondary))
+                // If no game socket was found, reset waiting state text
+                if (viewModel.gameSocketId.value == null) {
+                    binding.tvWaitingTitle.text = "Waiting for game socket"
+                    binding.tvWaitingSub.text = "Start VPN and open Shadow Fight 3"
+                }
+            } else {
+                binding.tvStatus.text = "● LIVE — scanning…"
+                binding.tvStatus.setTextColor(getColor(R.color.green_active))
+                if (viewModel.gameSocketId.value == null) {
+                    binding.tvWaitingTitle.text = "VPN active — scanning"
+                    binding.tvWaitingSub.text = "Open Shadow Fight 3 to detect game socket"
+                }
+            }
         }
 
-        viewModel.stats.observe(this) { stats ->
-            binding.tvStats.text =
-                "Total: ${stats.totalConnections} | Active: ${stats.activeConnections} | " +
-                "DNS: ${stats.dnsQueries} | WS: ${stats.webSockets}"
+        // When HANDSHAKE is detected in any TCP stream, this fires with that connection's ID
+        viewModel.gameSocketId.observe(this) { id ->
+            if (id == null) {
+                showWaiting()
+                return@observe
+            }
+            showSocket()
+        }
+
+        // Update the socket header + message list whenever anything changes
+        viewModel.connections.observe(this) { _ ->
+            val id = viewModel.gameSocketId.value ?: return@observe
+            val entry = viewModel.getConnection(id) ?: return@observe
+
+            // Header
+            binding.tvConnAddress.text = entry.displayAddress
+            binding.tvConnId.text = "ID: ${entry.id}"
+            binding.tvConnStatus.text = "Status: ${entry.status.name}"
+            binding.tvConnTraffic.text = entry.trafficSummary
+            binding.tvTraffic.text = entry.trafficSummary
+
+            val isLive = entry.status == ConnectionStatus.ACTIVE ||
+                         entry.status == ConnectionStatus.CONNECTING
+            binding.tvLiveIndicator.visibility = if (isLive) View.VISIBLE else View.GONE
+
+            // Messages
+            val messages = viewModel.getMessages(id)
+            messageAdapter.submitList(messages)
+            binding.tvEmptyMessages.visibility =
+                if (messages.isEmpty()) View.VISIBLE else View.GONE
+            if (messages.isNotEmpty()) {
+                binding.rvMessages.scrollToPosition(messages.size - 1)
+            }
         }
     }
 
-    private fun updateEmptyState(list: List<ConnectionEntry>) {
-        val isEmpty = list.isEmpty()
-        binding.rvConnections.visibility = if (isEmpty) View.GONE else View.VISIBLE
-        binding.layoutEmpty.visibility   = if (isEmpty) View.VISIBLE else View.GONE
+    private fun showWaiting() {
+        binding.layoutWaiting.visibility = View.VISIBLE
+        binding.layoutSocket.visibility  = View.GONE
     }
 
-    private fun openDetail(entry: ConnectionEntry) {
-        val intent = Intent(this, SocketDetailActivity::class.java).apply {
-            putExtra(SocketDetailActivity.EXTRA_CONN_ID, entry.id)
-        }
-        startActivity(intent)
+    private fun showSocket() {
+        binding.layoutWaiting.visibility = View.GONE
+        binding.layoutSocket.visibility  = View.VISIBLE
     }
 
     private fun requestVpnPermission() {
@@ -135,17 +136,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVpn() {
-        val intent = Intent(this, TrafficVpnService::class.java).apply {
+        startService(Intent(this, TrafficVpnService::class.java).apply {
             action = TrafficVpnService.ACTION_START
-        }
-        startService(intent)
+        })
     }
 
     private fun stopVpn() {
-        val intent = Intent(this, TrafficVpnService::class.java).apply {
+        startService(Intent(this, TrafficVpnService::class.java).apply {
             action = TrafficVpnService.ACTION_STOP
-        }
-        startService(intent)
+        })
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {

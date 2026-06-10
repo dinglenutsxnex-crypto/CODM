@@ -19,105 +19,41 @@
             android:layout_height="?attr/actionBarSize"
             android:background="@color/bg_secondary"
             app:titleTextColor="@color/text_primary"
-            app:title="@string/app_name" />
+            app:title="ShadowTrack" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
+            android:orientation="horizontal"
             android:paddingHorizontal="16dp"
-            android:paddingBottom="8dp">
+            android:paddingBottom="8dp"
+            android:gravity="center_vertical">
 
             <TextView
                 android:id="@+id/tv_status"
-                android:layout_width="match_parent"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:text="○ IDLE — Tap ▶ to start monitoring"
+                android:layout_weight="1"
+                android:text="○ IDLE — Tap ▶ to start"
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp"
-                android:fontFamily="monospace"
-                android:paddingVertical="4dp" />
+                android:fontFamily="monospace" />
 
             <TextView
-                android:id="@+id/tv_stats"
-                android:layout_width="match_parent"
+                android:id="@+id/tv_traffic"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Total: 0 | Active: 0 | DNS: 0 | WS: 0"
+                android:text=""
                 android:textColor="@color/text_secondary"
                 android:textSize="11sp"
                 android:fontFamily="monospace" />
 
-            <HorizontalScrollView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:scrollbars="none"
-                android:paddingTop="8dp">
-
-                <com.google.android.material.chip.ChipGroup
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    app:singleSelection="true">
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chip_all"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="ALL"
-                        android:textColor="@color/text_primary"
-                        app:chipBackgroundColor="@color/chip_all"
-                        style="@style/Widget.MaterialComponents.Chip.Filter" />
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chip_tcp"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="TCP"
-                        android:textColor="@color/text_primary"
-                        app:chipBackgroundColor="@color/tcp_color"
-                        style="@style/Widget.MaterialComponents.Chip.Filter" />
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chip_dns"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="DNS"
-                        android:textColor="@color/text_primary"
-                        app:chipBackgroundColor="@color/dns_color"
-                        style="@style/Widget.MaterialComponents.Chip.Filter" />
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chip_udp"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="UDP"
-                        android:textColor="@color/text_primary"
-                        app:chipBackgroundColor="@color/udp_color"
-                        style="@style/Widget.MaterialComponents.Chip.Filter" />
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chip_ws"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="WebSocket"
-                        android:textColor="@color/text_primary"
-                        app:chipBackgroundColor="@color/ws_color"
-                        style="@style/Widget.MaterialComponents.Chip.Filter" />
-
-                </com.google.android.material.chip.ChipGroup>
-            </HorizontalScrollView>
         </LinearLayout>
     </com.google.android.material.appbar.AppBarLayout>
 
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/rv_connections"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior"
-        android:paddingBottom="80dp"
-        android:clipToPadding="false" />
-
+    <!-- Waiting state: shown until HANDSHAKE is detected -->
     <LinearLayout
-        android:id="@+id/layout_empty"
+        android:id="@+id/layout_waiting"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
@@ -129,25 +65,142 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="📡"
-            android:textSize="64sp" />
+            android:textSize="56sp" />
 
         <TextView
+            android:id="@+id/tv_waiting_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="No connections yet"
+            android:text="Waiting for game socket"
             android:textColor="@color/text_primary"
-            android:textSize="18sp"
+            android:textSize="17sp"
             android:layout_marginTop="16dp" />
 
         <TextView
+            android:id="@+id/tv_waiting_sub"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Start monitoring and open Shadow Fight 3"
+            android:text="Start VPN and open Shadow Fight 3"
             android:textColor="@color/text_secondary"
             android:textSize="13sp"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:gravity="center"
             android:paddingHorizontal="32dp" />
+
+    </LinearLayout>
+
+    <!-- Game socket view: shown once HANDSHAKE is detected -->
+    <LinearLayout
+        android:id="@+id/layout_socket"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone"
+        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+        <!-- Connection header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp"
+            android:background="@color/bg_secondary">
+
+            <TextView
+                android:id="@+id/tv_live_indicator"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="● LIVE — data streaming"
+                android:textColor="@color/green_active"
+                android:textSize="12sp"
+                android:fontFamily="monospace"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/tv_conn_address"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:text="" />
+
+            <TextView
+                android:id="@+id/tv_conn_id"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/text_secondary"
+                android:textSize="10sp"
+                android:fontFamily="monospace"
+                android:text="" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="2dp">
+
+                <TextView
+                    android:id="@+id/tv_conn_status"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:fontFamily="monospace"
+                    android:text="" />
+
+                <TextView
+                    android:id="@+id/tv_conn_traffic"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"
+                    android:fontFamily="monospace"
+                    android:text="" />
+
+            </LinearLayout>
+
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/divider_color" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="LIVE DATA STREAM"
+            android:textColor="@color/text_secondary"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="6dp"
+            android:background="@color/bg_secondary"
+            android:letterSpacing="0.15" />
+
+        <TextView
+            android:id="@+id/tv_empty_messages"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Waiting for data…"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:paddingVertical="24dp"
+            android:visibility="visible" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rv_messages"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:paddingBottom="80dp"
+            android:clipToPadding="false" />
+
     </LinearLayout>
 
     <com.google.android.material.floatingactionbutton.FloatingActionButton

@@ -21,6 +21,10 @@ class ConnectionViewModel : ViewModel() {
     private val _stats = MutableLiveData(Stats())
     val stats: LiveData<Stats> = _stats
 
+    // The connection that sent the first HANDSHAKE message — this is the game socket
+    private val _gameSocketId = MutableLiveData<String?>(null)
+    val gameSocketId: LiveData<String?> = _gameSocketId
+
     data class Stats(
         val totalConnections: Int = 0,
         val activeConnections: Int = 0,
@@ -64,7 +68,7 @@ class ConnectionViewModel : ViewModel() {
             viewModelScope.launch(Dispatchers.Default) {
                 synchronized(conn.messages) {
                     conn.messages.add(message)
-                    if (conn.messages.size > 200) {
+                    if (conn.messages.size > 500) {
                         conn.messages.removeAt(0)
                     }
                 }
@@ -74,6 +78,14 @@ class ConnectionViewModel : ViewModel() {
                     conn.bytesOut += message.data.size
                 }
                 conn.lastActivityTime = System.currentTimeMillis()
+
+                // Auto-detect the game socket: any message whose payload
+                // contains the ASCII string "HANDSHAKE" locks this connection in.
+                val text = String(message.data, Charsets.ISO_8859_1)
+                if (text.contains("HANDSHAKE")) {
+                    _gameSocketId.postValue(id)
+                }
+
                 publishUpdate()
             }
         }
@@ -88,10 +100,16 @@ class ConnectionViewModel : ViewModel() {
 
     fun clearAll() {
         connectionMap.clear()
+        _gameSocketId.postValue(null)
         publishUpdate()
     }
 
     fun getConnection(id: String): ConnectionEntry? = connectionMap[id]
+
+    fun getMessages(id: String): List<LiveMessage> {
+        val conn = connectionMap[id] ?: return emptyList()
+        return synchronized(conn.messages) { conn.messages.toList() }
+    }
 
     private fun publishUpdate() {
         val list = connectionMap.values.sortedByDescending { it.lastActivityTime }
