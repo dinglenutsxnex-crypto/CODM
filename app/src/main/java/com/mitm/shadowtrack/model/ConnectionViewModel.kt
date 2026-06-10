@@ -101,7 +101,10 @@ class ConnectionViewModel : ViewModel() {
 
                     when (event) {
                         is GameEvent.BattleStarted -> {
-                            if (event.battleId != "?") {
+                            // Only set if no battle is currently active — prevents a second
+                            // BattleStarted packet (e.g. server echo with a player/session ID)
+                            // from overwriting the correct battle counter we already captured.
+                            if (event.battleId != "?" && _currentBattle.value == null) {
                                 _currentBattle.postValue(BattleState(event.battleId))
                             }
                         }
@@ -155,7 +158,9 @@ class ConnectionViewModel : ViewModel() {
 
         when (event) {
             is GameEvent.BattleStarted -> {
-                if (event.battleId != "?") _currentBattle.postValue(BattleState(event.battleId))
+                if (event.battleId != "?" && _currentBattle.value == null) {
+                    _currentBattle.postValue(BattleState(event.battleId))
+                }
             }
             is GameEvent.WinConfirmed -> {
                 _currentBattle.postValue(null)

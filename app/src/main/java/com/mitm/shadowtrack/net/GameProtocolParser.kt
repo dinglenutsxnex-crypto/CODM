@@ -68,10 +68,11 @@ object GameProtocolParser {
      * Prioritises longer runs first (more digits = less likely to be a flag/enum).
      */
     private fun extractIdFromRawText(text: String): String? {
-        // Only accept 5-10 digit sequences; reject timestamps (13 digits, ~1.78T in 2026)
-        return Regex("[0-9]{5,10}").findAll(text)
+        // Accept 5-9 digit sequences only; reject Unix-second-timestamps (>=1B) and ms-timestamps (13 digits)
+        return Regex("[0-9]{5,9}").findAll(text)
             .map { it.value }
-            .firstOrNull { it.toLongOrNull()?.let { v -> v in 10_000L..9_999_999_999L } == true }
+            .mapNotNull { s -> s.toLongOrNull()?.let { v -> if (isBattleIdCandidate(v)) s else null } }
+            .minByOrNull { it.toLong() }  // prefer smallest: battle counters < player/session IDs
     }
 
     // ── Framing ───────────────────────────────────────────────────────────
@@ -182,34 +183,54 @@ object GameProtocolParser {
         return extractIdFromRawText(params.toString(Charsets.ISO_8859_1))
     }
 
+    /**
+     * SF3 battle ID heuristics:
+     *  - Valid range: 10,000 – 999,999,999 (battle counters; never reach 1B)
+     *  - Reject Unix second-timestamps: 1,000,000,000 – 2,000,000,000 (player/session IDs, 2001-2033)
+     *  - Reject Unix ms-timestamps: >= 10^12
+     *  - Strategy: collect all TOP-LEVEL varint candidates first; only recurse into
+     *    nested byte fields if nothing usable found at current depth.
+     *    Among multiple top-level candidates, prefer the smallest value —
+     *    battle sequence counters are far smaller than player/session IDs.
+     */
+    private fun isBattleIdCandidate(v: Long): Boolean =
+        v in 10_000L..999_999_999L  // rejects flags (<10K), unix-second-ts (>=1B), ms-ts (>=10^12)
+
     private fun extractIdFromProto(data: ByteArray, depth: Int): String? {
         if (depth > 4) return null
         return try {
             val fields = readProtoFields(data)
-            // Collect candidates, rejecting timestamps (>=10^12 = ms-epoch in 2026)
-            // and tiny flags/enums (<10_000). Prefer first match over largest.
-            val candidates = mutableListOf<Long>()
+
+            // Pass 1: collect top-level varint candidates (no recursion yet)
+            val topLevel = mutableListOf<Long>()
+            val nestedBlobs = mutableListOf<ByteArray>()
+
             for ((_, v) in fields) {
                 when (v) {
                     is Long -> {
-                        // Game IDs are plausibly 5-10 digits; timestamps are 13+ digits
-                        if (v in 10_000L..9_999_999_999L) candidates.add(v)
+                        if (isBattleIdCandidate(v)) topLevel.add(v)
                     }
                     is ByteArray -> {
-                        // Pure digit string field
+                        // Pure ASCII digit string — check first before treating as proto
                         val s = v.toString(Charsets.UTF_8)
-                        if (s.isNotEmpty() && s.all { it.isDigit() } && s.length in 5..10) {
+                        if (s.isNotEmpty() && s.all { it.isDigit() } && s.length in 5..9) {
                             val n = s.toLongOrNull()
-                            if (n != null && n in 10_000L..9_999_999_999L) return s
+                            if (n != null && isBattleIdCandidate(n)) return s
                         }
-                        // Recurse into nested proto
-                        val nested = extractIdFromProto(v, depth + 1)
-                        if (nested != null) return nested
+                        nestedBlobs.add(v)
                     }
                 }
             }
-            // Prefer first (lowest field number = most likely primary ID)
-            candidates.firstOrNull()?.toString()
+
+            // Prefer smallest top-level candidate (battle counters << player/session IDs)
+            if (topLevel.isNotEmpty()) return topLevel.min().toString()
+
+            // Pass 2: recurse into nested blobs only if nothing found above
+            for (blob in nestedBlobs) {
+                val nested = extractIdFromProto(blob, depth + 1)
+                if (nested != null) return nested
+            }
+            null
         } catch (_: Exception) { null }
     }
 
