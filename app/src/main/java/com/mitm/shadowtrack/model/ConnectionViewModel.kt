@@ -4,6 +4,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mitm.shadowtrack.net.GameProtocolParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
@@ -21,9 +22,14 @@ class ConnectionViewModel : ViewModel() {
     private val _stats = MutableLiveData(Stats())
     val stats: LiveData<Stats> = _stats
 
-    // The connection that sent the first HANDSHAKE message — this is the game socket
+    // The connection that sent the first HANDSHAKE — this is the game socket
     private val _gameSocketId = MutableLiveData<String?>(null)
     val gameSocketId: LiveData<String?> = _gameSocketId
+
+    // Parsed game events emitted to the overlay
+    private val _gameEvents = MutableLiveData<List<GameEvent>>(emptyList())
+    val gameEvents: LiveData<List<GameEvent>> = _gameEvents
+    private val gameEventList = mutableListOf<GameEvent>()
 
     data class Stats(
         val totalConnections: Int = 0,
@@ -68,9 +74,7 @@ class ConnectionViewModel : ViewModel() {
             viewModelScope.launch(Dispatchers.Default) {
                 synchronized(conn.messages) {
                     conn.messages.add(message)
-                    if (conn.messages.size > 500) {
-                        conn.messages.removeAt(0)
-                    }
+                    if (conn.messages.size > 500) conn.messages.removeAt(0)
                 }
                 if (message.direction == LiveMessage.Direction.INBOUND) {
                     conn.bytesIn += message.data.size
@@ -79,11 +83,20 @@ class ConnectionViewModel : ViewModel() {
                 }
                 conn.lastActivityTime = System.currentTimeMillis()
 
-                // Auto-detect the game socket: any message whose payload
-                // contains the ASCII string "HANDSHAKE" locks this connection in.
+                // Auto-detect game socket by HANDSHAKE string in payload
                 val text = String(message.data, Charsets.ISO_8859_1)
                 if (text.contains("HANDSHAKE")) {
                     _gameSocketId.postValue(id)
+                }
+
+                // Try to parse as SF3 protocol and emit a game event
+                val event = GameProtocolParser.parse(message.data, message.direction)
+                if (event != null) {
+                    synchronized(gameEventList) {
+                        gameEventList.add(event)
+                        if (gameEventList.size > 200) gameEventList.removeAt(0)
+                    }
+                    _gameEvents.postValue(gameEventList.toList())
                 }
 
                 publishUpdate()
@@ -101,6 +114,8 @@ class ConnectionViewModel : ViewModel() {
     fun clearAll() {
         connectionMap.clear()
         _gameSocketId.postValue(null)
+        synchronized(gameEventList) { gameEventList.clear() }
+        _gameEvents.postValue(emptyList())
         publishUpdate()
     }
 
