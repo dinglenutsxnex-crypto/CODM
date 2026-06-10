@@ -88,6 +88,19 @@ class ConnectionViewModel : ViewModel() {
 
     fun addMessage(id: String, message: LiveMessage) {
         connectionMap[id]?.let { conn ->
+            // Update outbound counter SYNCHRONOUSLY before launching the coroutine.
+            // The Win button reads _outboundCounter on the main thread. If this update
+            // were inside the coroutine (Dispatchers.Default) there would be a race:
+            // the latest ping counter might not be committed yet when the user taps Win,
+            // causing nextInjectCounter to return a counter the server already processed →
+            // server silently drops the duplicate → no WIN response.
+            if (message.direction == LiveMessage.Direction.OUTBOUND) {
+                val counter = GameProtocolParser.extractCounter(message.data)
+                if (counter != null) {
+                    _outboundCounter.updateAndGet { maxOf(it, counter) }
+                }
+            }
+
             viewModelScope.launch(Dispatchers.Default) {
                 synchronized(conn.messages) {
                     conn.messages.add(message)
@@ -103,14 +116,6 @@ class ConnectionViewModel : ViewModel() {
                 val text = String(message.data, Charsets.ISO_8859_1)
                 if (text.contains("HANDSHAKE")) {
                     _gameSocketId.postValue(id)
-                }
-
-                // Track the outbound packet counter so injected packets use the correct next value.
-                if (message.direction == LiveMessage.Direction.OUTBOUND) {
-                    val counter = GameProtocolParser.extractCounter(message.data)
-                    if (counter != null) {
-                        _outboundCounter.updateAndGet { maxOf(it, counter) }
-                    }
                 }
 
                 val event = GameProtocolParser.parse(message.data, message.direction)
@@ -161,6 +166,7 @@ class ConnectionViewModel : ViewModel() {
         connectionMap.clear()
         _gameSocketId.postValue(null)
         _battleSocketId.postValue(null)
+        _outboundCounter.set(0L)
         synchronized(gameEventList) { gameEventList.clear() }
         _gameEvents.postValue(emptyList())
         _currentBattle.postValue(null)
