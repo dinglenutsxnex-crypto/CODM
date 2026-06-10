@@ -1,46 +1,60 @@
 package com.mitm.shadowtrack.net
 
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.zip.Deflater
 
 /**
  * Builds SF3 wire-format packets for injection.
  *
  * Wire format:
- *   Small  [0x01][1B len][protobuf envelope]
- *   Large  [0x02][4B LE len][raw-deflate protobuf envelope]
+ *   Small  [0x01][1B len][protobuf envelope]          payload <= 255 bytes
+ *   Large  [0x02][4B LE len][raw-deflate protobuf envelope]  payload > 255 bytes
+ *
+ * Outer protobuf envelope:
+ *   field[1] varint = counter   (session packet sequence number — must be last seen + 1)
+ *   field[2] string = command
+ *   field[3] bytes  = params
  *
  * Verified against captured outbound event_battle_finish_fight packet (user_3):
  *
  *   envelope:
- *     field[1] varint = 34          (controller)
+ *     field[1] varint = 34          (counter at that point in that captured session)
  *     field[2] string = "event_battle_finish_fight"
  *     field[3] bytes  = params
  *
  *   params:
- *     field[1]  varint = battleId          (e.g. 3001602)
+ *     field[1]  varint = battleId
  *     field[4]  varint = 3                 (constant)
- *     field[6]  bytes  = {field[1] = ts}   (current timestamp ms, nested proto)
+ *     field[6]  bytes  = {field[1] = seed} (seed nested proto, 7 bytes in capture)
  *     field[7]  varint = 1                 (win outcome)
  *     field[10] bytes  = ""                (empty)
  *     field[13] bytes  = {field[2] = 29}   (result payload, nested proto)
  */
 object PacketInjector {
 
-    fun buildFinishFight(battleId: Long): ByteArray {
-        val ts        = System.currentTimeMillis()
-        val tsProto   = proto { varintField(1, ts) }
-        val resProto  = proto { varintField(2, 29L) }
+    /**
+     * Build a finish-fight win packet.
+     *
+     * @param battleId  The battle ID captured from the outbound event_battle_start_fight packet.
+     * @param counter   The next outbound sequence counter — pass ConnectionViewModel.nextInjectCounter.
+     *                  Using the wrong counter (e.g. a hardcoded value) causes the server to treat
+     *                  the packet as a duplicate and silently ignore it.
+     */
+    fun buildFinishFight(battleId: Long, counter: Long): ByteArray {
+        val seedProto  = proto { varintField(1, System.currentTimeMillis()) }
+        val resProto   = proto { varintField(2, 29L) }
 
         val params = proto {
-            varintField(1,  battleId)           // battle_id
-            varintField(4,  3L)                 // constant
-            bytesField(6,   tsProto)             // timestamp nested proto
-            varintField(7,  1L)                 // win = 1
-            bytesField(10,  ByteArray(0))        // empty field
-            bytesField(13,  resProto)            // result nested proto
+            varintField(1,  battleId)
+            varintField(4,  3L)
+            bytesField(6,   seedProto)
+            varintField(7,  1L)
+            bytesField(10,  ByteArray(0))
+            bytesField(13,  resProto)
         }
-        return envelope("event_battle_finish_fight", params, controller = 34L)
+        return envelope("event_battle_finish_fight", params, counter = counter)
     }
 
     // ── Proto writer ──────────────────────────────────────────────────────
@@ -51,19 +65,38 @@ object PacketInjector {
         return w.toByteArray()
     }
 
-    private fun envelope(command: String, params: ByteArray, controller: Long): ByteArray {
+    private fun envelope(command: String, params: ByteArray, counter: Long): ByteArray {
         val body = proto {
-            varintField(1, controller)
+            varintField(1, counter)
             stringField(2, command)
             bytesField(3, params)
         }
-        return if (body.size < 255) {
+        return if (body.size <= 255) {
             byteArrayOf(0x01, body.size.toByte()) + body
         } else {
+            val compressed = rawDeflate(body)
             val lenBytes = ByteBuffer.allocate(4)
-                .order(ByteOrder.LITTLE_ENDIAN).putInt(body.size).array()
-            byteArrayOf(0x02) + lenBytes + body
+                .order(ByteOrder.LITTLE_ENDIAN).putInt(compressed.size).array()
+            byteArrayOf(0x02) + lenBytes + compressed
         }
+    }
+
+    /**
+     * Raw deflate (no zlib header/trailer). Matches Python: zlib.compress(data, 6)[2:-4]
+     * and is required for the SF3 large-packet (0x02) framing.
+     */
+    private fun rawDeflate(data: ByteArray): ByteArray {
+        val deflater = Deflater(6, true)
+        deflater.setInput(data)
+        deflater.finish()
+        val out = ByteArrayOutputStream(data.size)
+        val buf = ByteArray(8192)
+        while (!deflater.finished()) {
+            val n = deflater.deflate(buf)
+            if (n > 0) out.write(buf, 0, n)
+        }
+        deflater.end()
+        return out.toByteArray()
     }
 
     // ── Low-level proto writer ────────────────────────────────────────────

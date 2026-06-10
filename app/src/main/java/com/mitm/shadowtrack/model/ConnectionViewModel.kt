@@ -8,6 +8,7 @@ import com.mitm.shadowtrack.net.GameProtocolParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 class ConnectionViewModel : ViewModel() {
 
@@ -29,6 +30,14 @@ class ConnectionViewModel : ViewModel() {
     // May differ from gameSocketId (HANDSHAKE conn) if SF3 uses separate connections.
     private val _battleSocketId = MutableLiveData<String?>(null)
     val battleSocketId: LiveData<String?> = _battleSocketId
+
+    // Tracks the highest outbound packet counter seen so far in the session.
+    // Injected packets must use this + 1 so the server doesn't treat them as duplicates.
+    private val _outboundCounter = AtomicLong(0L)
+    val nextInjectCounter: Long get() {
+        val c = _outboundCounter.get()
+        return if (c > 0L) c + 1L else 1L
+    }
 
     private val _gameEvents = MutableLiveData<List<GameEvent>>(emptyList())
     val gameEvents: LiveData<List<GameEvent>> = _gameEvents
@@ -94,6 +103,14 @@ class ConnectionViewModel : ViewModel() {
                 val text = String(message.data, Charsets.ISO_8859_1)
                 if (text.contains("HANDSHAKE")) {
                     _gameSocketId.postValue(id)
+                }
+
+                // Track the outbound packet counter so injected packets use the correct next value.
+                if (message.direction == LiveMessage.Direction.OUTBOUND) {
+                    val counter = GameProtocolParser.extractCounter(message.data)
+                    if (counter != null) {
+                        _outboundCounter.updateAndGet { maxOf(it, counter) }
+                    }
                 }
 
                 val event = GameProtocolParser.parse(message.data, message.direction)

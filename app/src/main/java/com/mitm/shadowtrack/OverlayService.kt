@@ -233,7 +233,8 @@ class OverlayService : Service() {
             val idLong = id.toLongOrNull() ?: return@setOnClickListener
             val winStatus = view.findViewById<TextView>(R.id.tv_win_status)
             try {
-                val packet = com.mitm.shadowtrack.net.PacketInjector.buildFinishFight(idLong)
+                val counter = AppState.viewModel.nextInjectCounter
+                val packet = com.mitm.shadowtrack.net.PacketInjector.buildFinishFight(idLong, counter)
                 TrafficVpnService.instance?.injectToGameSocket(packet)
                 // Emit a synthetic event so logs + Events tab update immediately
                 AppState.viewModel.emitEvent(

@@ -92,6 +92,21 @@ object GameProtocolParser {
             .minByOrNull { it.toLong() }
     }
 
+    // ── Counter extraction (public — used by ViewModel to track session seq) ─
+
+    /**
+     * Returns the outbound packet counter (field[1] in the SF3 envelope) from
+     * a raw framed packet, or null if the packet can't be parsed.
+     *
+     * The counter increments with every packet the client sends. Injected packets
+     * must use counter = (last seen outbound counter) + 1 so the server doesn't
+     * treat them as duplicates.
+     */
+    fun extractCounter(data: ByteArray): Long? {
+        val payload = extractPayload(data) ?: return null
+        return (readProtoFields(payload)[1] as? Long)?.takeIf { it > 0 }
+    }
+
     // ── Framing ───────────────────────────────────────────────────────────
 
     private fun extractPayload(data: ByteArray): ByteArray? {
