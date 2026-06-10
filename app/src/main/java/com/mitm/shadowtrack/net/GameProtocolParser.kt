@@ -33,18 +33,22 @@ object GameProtocolParser {
 
     // ── Framing ───────────────────────────────────────────────────────────
 
-    private fun extractPayload(data: ByteArray): ByteArray? = when (data[0].toInt() and 0xFF) {
-        0x01 -> {
-            val len = data[1].toInt() and 0xFF
-            if (data.size < 2 + len) null else data.copyOfRange(2, 2 + len)
+    private fun extractPayload(data: ByteArray): ByteArray? {
+        return when (data[0].toInt() and 0xFF) {
+            0x01 -> {
+                val len = data[1].toInt() and 0xFF
+                if (data.size < 2 + len) null else data.copyOfRange(2, 2 + len)
+            }
+            0x02 -> {
+                if (data.size < 5) null
+                else {
+                    val len = ByteBuffer.wrap(data, 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                    if (len <= 0 || data.size < 5 + len) null
+                    else rawDeflate(data.copyOfRange(5, 5 + len))
+                }
+            }
+            else -> null
         }
-        0x02 -> {
-            if (data.size < 5) return null
-            val len = ByteBuffer.wrap(data, 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
-            if (len <= 0 || data.size < 5 + len) null
-            else rawDeflate(data.copyOfRange(5, 5 + len))
-        }
-        else -> null
     }
 
     // ── Envelope dispatch ─────────────────────────────────────────────────
