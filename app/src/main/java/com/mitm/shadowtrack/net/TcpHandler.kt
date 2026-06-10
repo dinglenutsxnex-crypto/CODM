@@ -27,7 +27,12 @@ data class TcpConnState(
     var awaitingWsHandshake: Boolean = false,
     var isWebSocket: Boolean = false,
     val inboundWsBuffer: ByteArrayOutputStream = ByteArrayOutputStream(),
-    val outboundWsBuffer: ByteArrayOutputStream = ByteArrayOutputStream()
+    val outboundWsBuffer: ByteArrayOutputStream = ByteArrayOutputStream(),
+    // SF3 stream reassembly buffers — the server's large responses (e.g. finish_fight ACK
+    // is 33 KB decompressed / 12 KB compressed) arrive in multiple TCP segments.
+    // We must buffer raw bytes and emit ONLY complete SF3 frames to the parser.
+    val inboundSf3Buffer: ByteArrayOutputStream = ByteArrayOutputStream(),
+    val outboundSf3Buffer: ByteArrayOutputStream = ByteArrayOutputStream()
 ) {
     val key get() = "${srcIp.joinToString(".")}:$srcPort->${dstIp.joinToString(".")}:$dstPort"
 }
@@ -140,7 +145,11 @@ class TcpHandler(
                 text.contains("Upgrade: WebSocket", ignoreCase = true)) {
                 conn.awaitingWsHandshake = true
             }
-            onMessage(conn.connId, LiveMessage(LiveMessage.Direction.OUTBOUND, packet.payload))
+            // Buffer and reassemble SF3 frames — large packets (e.g. get_player at 9 KB
+            // compressed) arrive across many TCP segments; passing a partial segment to the
+            // parser returns null and we'd lose counter tracking and battle detection.
+            conn.outboundSf3Buffer.write(packet.payload)
+            parseSf3Frames(conn.connId, conn.outboundSf3Buffer, LiveMessage.Direction.OUTBOUND)
         } else {
             // WS is established — buffer and parse outbound frames (client→server, masked)
             conn.outboundWsBuffer.write(packet.payload)
@@ -229,7 +238,14 @@ class TcpHandler(
                     conn.inboundWsBuffer.write(data)
                     parseWsFrames(conn.connId, conn.inboundWsBuffer, LiveMessage.Direction.INBOUND)
                 } else {
-                    onMessage(conn.connId, LiveMessage(LiveMessage.Direction.INBOUND, data))
+                    // Buffer and reassemble SF3 frames.
+                    // The server's finish_fight ACK is 12 KB compressed / 33 KB decompressed
+                    // and arrives across 3 separate TCP reads.  Passing a raw partial chunk
+                    // to the parser returns null (extractPayload checks data.size < 5+len)
+                    // so WinConfirmed is never emitted.  We accumulate bytes here and only
+                    // call onMessage once a COMPLETE frame is available.
+                    conn.inboundSf3Buffer.write(data)
+                    parseSf3Frames(conn.connId, conn.inboundSf3Buffer, LiveMessage.Direction.INBOUND)
                 }
             }
         } catch (_: Exception) {
@@ -303,6 +319,57 @@ class TcpHandler(
 
         // Keep any leftover bytes for the next read
         if (offset < raw.size) buffer.write(raw, offset, raw.size - offset)
+    }
+
+    /**
+     * Buffers raw bytes from [buffer] and emits each COMPLETE SF3 frame to [onMessage].
+     * Leftover incomplete bytes stay in [buffer] for the next call.
+     *
+     * SF3 framing:
+     *   Small  0x01 + 1B-len + payload          total = 2 + len
+     *   Large  0x02 + 4B-LE-len + compressed    total = 5 + compLen
+     *
+     * This is the key fix for WinConfirmed never firing: the server's finish_fight
+     * response is 12 KB compressed / 33 KB decompressed and arrives across 3 TCP reads.
+     * Without this buffer, each partial read is passed to extractPayload which checks
+     * `data.size < 5 + compLen` and returns null, silently dropping the response.
+     */
+    private fun parseSf3Frames(
+        connId: String,
+        buffer: ByteArrayOutputStream,
+        dir: LiveMessage.Direction
+    ) {
+        val raw = buffer.toByteArray()
+        buffer.reset()
+
+        var pos = 0
+        while (pos < raw.size) {
+            val t = raw[pos].toInt() and 0xFF
+            when (t) {
+                0x01 -> {
+                    if (pos + 2 > raw.size) break
+                    val len = raw[pos + 1].toInt() and 0xFF
+                    if (pos + 2 + len > raw.size) break
+                    onMessage(connId, LiveMessage(dir, raw.copyOfRange(pos, pos + 2 + len)))
+                    pos += 2 + len
+                }
+                0x02 -> {
+                    if (pos + 5 > raw.size) break
+                    val compLen = ByteBuffer.wrap(raw, pos + 1, 4)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+                    if (compLen <= 0 || pos + 5 + compLen > raw.size) break
+                    onMessage(connId, LiveMessage(dir, raw.copyOfRange(pos, pos + 5 + compLen)))
+                    pos += 5 + compLen
+                }
+                else -> {
+                    // Unknown frame type — skip one byte and try to re-sync
+                    pos++
+                }
+            }
+        }
+
+        // Keep any incomplete bytes for the next read
+        if (pos < raw.size) buffer.write(raw, pos, raw.size - pos)
     }
 
     // ── Packet building helpers ───────────────────────────────────────────────

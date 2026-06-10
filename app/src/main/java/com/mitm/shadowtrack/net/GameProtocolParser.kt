@@ -284,9 +284,17 @@ object GameProtocolParser {
         inflater.setInput(data)
         val out = java.io.ByteArrayOutputStream(data.size * 3)
         val buf = ByteArray(8192)
-        while (!inflater.finished() && !inflater.needsInput()) {
+        // Loop until the stream is fully decompressed.
+        // The old condition `!finished() && !needsInput()` exited prematurely
+        // when the inflater's internal output buffer was full but not yet drained,
+        // causing partial decompression of large packets (e.g. the 33 KB finish_fight
+        // server response).  The correct idiom is to keep calling inflate() until
+        // finished() is true; needsInput() only becomes true if we supplied incomplete
+        // compressed data, which should never happen after the stream reassembly fix.
+        while (!inflater.finished()) {
             val n = inflater.inflate(buf)
             if (n > 0) out.write(buf, 0, n)
+            else if (inflater.needsInput()) break  // incomplete input — stop gracefully
         }
         inflater.end()
         out.toByteArray().takeIf { it.isNotEmpty() }
