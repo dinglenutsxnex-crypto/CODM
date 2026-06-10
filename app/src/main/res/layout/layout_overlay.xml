@@ -2,62 +2,137 @@
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/overlay_root"
-    android:layout_width="300dp"
+    android:layout_width="360dp"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="#E6161B22"
-    android:elevation="8dp">
+    android:background="#EE0D1117"
+    android:elevation="12dp">
 
-    <!-- Header bar (drag handle + title + controls) -->
+    <!-- ── Header (drag handle) ── -->
     <LinearLayout
         android:id="@+id/overlay_header"
         android:layout_width="match_parent"
-        android:layout_height="40dp"
+        android:layout_height="52dp"
         android:orientation="horizontal"
-        android:background="#CC0D1117"
+        android:background="#FF161B22"
         android:gravity="center_vertical"
-        android:paddingHorizontal="10dp">
+        android:paddingStart="12dp"
+        android:paddingEnd="4dp">
 
+        <!-- Drag grip + title -->
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="SF3 LOG"
-            android:textColor="#3FB950"
-            android:textSize="12sp"
+            android:text="⚔  SHADOWTRACK"
+            android:textColor="#FF58A6FF"
+            android:textSize="13sp"
             android:textStyle="bold"
             android:fontFamily="monospace"
-            android:letterSpacing="0.15" />
+            android:letterSpacing="0.1" />
 
+        <!-- Live event count badge -->
         <TextView
-            android:id="@+id/btn_clear"
+            android:id="@+id/tv_event_count"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="CLR"
-            android:textColor="#8B949E"
+            android:layout_height="20dp"
+            android:minWidth="20dp"
+            android:text="0"
+            android:textColor="#FF0D1117"
             android:textSize="10sp"
-            android:fontFamily="monospace"
-            android:paddingHorizontal="8dp"
-            android:paddingVertical="4dp" />
+            android:textStyle="bold"
+            android:gravity="center"
+            android:background="#FF3FB950"
+            android:paddingHorizontal="5dp"
+            android:layout_marginEnd="8dp" />
 
+        <!-- Triple-dot menu trigger -->
+        <TextView
+            android:id="@+id/btn_menu"
+            android:layout_width="40dp"
+            android:layout_height="52dp"
+            android:text="⋮"
+            android:textColor="#FF8B949E"
+            android:textSize="20sp"
+            android:gravity="center"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <!-- Minimize -->
         <TextView
             android:id="@+id/btn_minimize"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="40dp"
+            android:layout_height="52dp"
             android:text="−"
-            android:textColor="#8B949E"
-            android:textSize="18sp"
-            android:paddingHorizontal="6dp"
-            android:paddingVertical="2dp" />
+            android:textColor="#FF8B949E"
+            android:textSize="20sp"
+            android:gravity="center"
+            android:clickable="true"
+            android:focusable="true" />
 
     </LinearLayout>
 
-    <!-- Event list -->
+    <!-- ── Dropdown menu panel (hidden by default) ── -->
+    <LinearLayout
+        android:id="@+id/panel_menu"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="#FF21262D"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/menu_clear"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="   🗑  Clear logs"
+            android:textColor="#FFE6EDF3"
+            android:textSize="13sp"
+            android:fontFamily="monospace"
+            android:gravity="center_vertical"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?android:attr/selectableItemBackground" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#FF30363D" />
+
+        <TextView
+            android:id="@+id/menu_download"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="   📥  Download logs (.zip)"
+            android:textColor="#FFE6EDF3"
+            android:textSize="13sp"
+            android:fontFamily="monospace"
+            android:gravity="center_vertical"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?android:attr/selectableItemBackground" />
+
+    </LinearLayout>
+
+    <!-- ── Event list ── -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rv_events"
         android:layout_width="match_parent"
-        android:layout_height="250dp"
-        android:scrollbars="vertical"
-        android:fadeScrollbars="true" />
+        android:layout_height="300dp"
+        android:scrollbars="none"
+        android:overScrollMode="never" />
+
+    <!-- ── Status bar ── -->
+    <TextView
+        android:id="@+id/tv_status_bar"
+        android:layout_width="match_parent"
+        android:layout_height="24dp"
+        android:text="no data yet"
+        android:textColor="#FF444C56"
+        android:textSize="9sp"
+        android:fontFamily="monospace"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="10dp"
+        android:background="#FF0D1117" />
 
 </LinearLayout>

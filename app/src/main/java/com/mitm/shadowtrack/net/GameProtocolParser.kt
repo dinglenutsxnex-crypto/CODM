@@ -100,31 +100,36 @@ object GameProtocolParser {
     // ── Login extraction ──────────────────────────────────────────────────
 
     /**
-     * LOGIN outer.field[3]       = inner
-     * inner.field[2]             = login_request_proto
-     * login_request_proto.field[2] = auth_token_proto
-     * auth_token_proto.field[2]  = '{"login":"<guid>","password":"<md5>"}'
+     * Confirmed structure from real capture (user_2.bin decompressed):
+     *   outer.field[3] = params
+     *   params.field[2] = auth_wrapper   (tag 12, length 98)
+     *   auth_wrapper.field[2] = json     (tag 12, length 94)
+     *   json = '{"login":"<guid>","password":"<md5>"}'
+     *
+     * That's exactly 2 levels of field[2] nesting — NOT 3.
      */
     private fun extractLoginCredentials(params: ByteArray?): Pair<String, String> {
         if (params == null) return "?" to "?"
         return try {
-            val f1 = readProtoFields(params)
-            val loginReq = (f1[2] as? ByteArray) ?: return "?" to "?"
-            val f2 = readProtoFields(loginReq)
-            val authToken = (f2[2] as? ByteArray) ?: return "?" to "?"
-            val f3 = readProtoFields(authToken)
-            val json = (f3[2] as? ByteArray)?.toString(Charsets.UTF_8) ?: return "?" to "?"
-            val guid = extractJsonValue(json, "login")  ?: "?"
-            val pass = extractJsonValue(json, "password") ?: "?"
+            // Level 1: params.field[2] = auth_wrapper
+            val authWrapper = (readProtoFields(params)[2] as? ByteArray) ?: return scanRaw(params)
+            // Level 2: auth_wrapper.field[2] = JSON bytes
+            val jsonBytes   = (readProtoFields(authWrapper)[2] as? ByteArray) ?: return scanRaw(params)
+            val json = jsonBytes.toString(Charsets.UTF_8)
+            val guid = extractJsonValue(json, "login")    ?: return scanRaw(params)
+            val pass = extractJsonValue(json, "password") ?: return scanRaw(params)
             guid to pass
         } catch (_: Exception) {
-            // Fallback: scan raw bytes for GUID and MD5 patterns
-            val text = params.toString(Charsets.ISO_8859_1)
-            val guid = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-                .find(text)?.value ?: "?"
-            val pass = Regex("[0-9a-f]{32}").find(text)?.value ?: "?"
-            guid to pass
+            scanRaw(params)
         }
+    }
+
+    private fun scanRaw(data: ByteArray): Pair<String, String> {
+        val text = data.toString(Charsets.ISO_8859_1)
+        val guid = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+            .find(text)?.value ?: "?"
+        val pass = Regex("[0-9a-f]{32}").find(text)?.value ?: "?"
+        return guid to pass
     }
 
     private fun extractBattleId(params: ByteArray): String? {
