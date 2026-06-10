@@ -10,7 +10,6 @@ import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.google.android.material.chip.Chip
 import com.mitm.shadowtrack.databinding.ActivityMainBinding
 import com.mitm.shadowtrack.model.ConnectionEntry
 import com.mitm.shadowtrack.model.ConnectionViewModel
