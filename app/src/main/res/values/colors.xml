@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Background -->
+    <color name="bg_primary">#0D1117</color>
+    <color name="bg_secondary">#161B22</color>
+    <color name="bg_outbound">#0D1E0D</color>
+    <color name="bg_inbound">#0D1525</color>
+    <color name="bg_dns_card">#1A1200</color>
+
+    <!-- Text -->
+    <color name="text_primary">#E6EDF3</color>
+    <color name="text_secondary">#8B949E</color>
+
+    <!-- Protocol chips -->
+    <color name="tcp_color">#1F6FEB</color>
+    <color name="dns_color">#D29922</color>
+    <color name="udp_color">#8957E5</color>
+    <color name="ws_color">#3FB950</color>
+    <color name="chip_all">#30363D</color>
+
+    <!-- Status -->
+    <color name="green_active">#3FB950</color>
+    <color name="yellow_connecting">#D29922</color>
+    <color name="red_error">#F85149</color>
+
+    <!-- Data direction -->
+    <color name="outbound_color">#F0883E</color>
+    <color name="inbound_color">#58A6FF</color>
+
+    <!-- UI -->
+    <color name="divider_color">#21262D</color>
+
+    <!-- System -->
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

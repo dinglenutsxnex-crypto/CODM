@@ -1,0 +1,3 @@
+-keep class com.mitm.shadowtrack.** { *; }
+-keepattributes *Annotation*
+-keepattributes SourceFile,LineNumberTable
