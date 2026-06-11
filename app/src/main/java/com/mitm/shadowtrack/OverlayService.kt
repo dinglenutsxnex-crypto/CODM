@@ -497,7 +497,7 @@ class OverlayService : Service() {
         val params = makeParams(w = dp(72f), h = dp(72f)).also {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                 it.flags = it.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                it.blurBehindRadius = 20
+                it.blurBehindRadius = 28
             }
         }
 

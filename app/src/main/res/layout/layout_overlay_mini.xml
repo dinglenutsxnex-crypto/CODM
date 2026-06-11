@@ -15,12 +15,11 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="[HS]"
-        android:textColor="#99AAAAAA"
+        android:textColor="#FF58A6FF"
         android:textSize="15sp"
         android:textStyle="bold"
         android:fontFamily="monospace"
-        android:gravity="center"
-        android:letterSpacing="0.05" />
+        android:gravity="center" />
 
     <TextView
         android:id="@+id/tv_mini_count"
