@@ -89,6 +89,14 @@ class TcpHandler(
     /** Disarm the clan intercept without firing. */
     fun disarmClanIntercept() { clanInterceptArmed.set(false) }
 
+    // ── Raid damage intercept ─────────────────────────────────────────────
+    // When armed, the next outbound raid_fight_finish is patched so that
+    // params.field[2] fixed32 = 1.0, meaning 100% of boss HP dealt (boss killed).
+    private val raidInterceptArmed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun armRaidIntercept()    { raidInterceptArmed.set(true) }
+    fun disarmRaidIntercept() { raidInterceptArmed.set(false) }
+
     /**
      * Called from parseSf3Frames for every INBOUND complete frame.
      * If [frame] is the server's clan_start_fight response, extracts the round
@@ -231,6 +239,20 @@ class TcpHandler(
                     return  // do NOT forward the unmodified loss packet
                 }
                 payloadForServer = patched
+            }
+
+            // ── Raid damage intercept ─────────────────────────────────────
+            // When armed, replaces params.field[2] fixed32 with 1.0 so the
+            // server sees 100% of boss HP dealt = boss reduced to 0 HP.
+            if (raidInterceptArmed.get() && GameProtocolParser.tryExtractRaidFightFinish(payloadForServer)) {
+                raidInterceptArmed.set(false)
+                val patched = PacketInjector.patchRaidFightFinishToMaxDamage(payloadForServer)
+                if (patched != null) {
+                    payloadForServer = patched
+                } else {
+                    onMessage(connKey, LiveMessage(LiveMessage.Direction.OUTBOUND,
+                        "RAID PATCH FAILED — hex: ${payloadForServer.joinToString(" ") { "%02x".format(it) }}".toByteArray()))
+                }
             }
 
             // Buffer and reassemble SF3 frames — large packets (e.g. get_player at 9 KB

@@ -53,6 +53,11 @@ class ConnectionViewModel : ViewModel() {
     private val _clanRounds = MutableLiveData<Int?>(null)
     val clanRounds: LiveData<Int?> = _clanRounds
 
+    // True between outbound raid_fight_start and inbound raid_fight_finish.
+    // Drives the ARM MAX DMG button visibility in the overlay.
+    private val _raidFightActive = MutableLiveData<Boolean>(false)
+    val raidFightActive: LiveData<Boolean> = _raidFightActive
+
     data class Stats(
         val totalConnections: Int = 0,
         val activeConnections: Int = 0,
@@ -146,6 +151,15 @@ class ConnectionViewModel : ViewModel() {
                         if (rounds != null) _clanRounds.postValue(rounds)
                     }
 
+                    // Raid fight state: active from outbound raid_fight_start
+                    // until inbound raid_fight_finish (server has processed our result).
+                    if (event is GameEvent.Command) {
+                        when {
+                            event.isOutbound  && event.name == "raid_fight_start"  -> _raidFightActive.postValue(true)
+                            !event.isOutbound && event.name == "raid_fight_finish" -> _raidFightActive.postValue(false)
+                        }
+                    }
+
                     synchronized(gameEventList) {
                         gameEventList.add(event)
                         if (gameEventList.size > 2000) gameEventList.removeAt(0)
@@ -218,6 +232,7 @@ class ConnectionViewModel : ViewModel() {
         _gameEvents.postValue(emptyList())
         _currentBattle.postValue(null)
         _clanRounds.postValue(null)
+        _raidFightActive.postValue(false)
         publishUpdate()
     }
 

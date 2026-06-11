@@ -45,6 +45,10 @@ class OverlayService : Service() {
     // The next outbound finish_fight from the game will be replaced with a WIN packet.
     private var interceptIsArmed = false
 
+    // True while the ARM MAX DMG raid intercept is set in TcpHandler.
+    // The next outbound raid_fight_finish will have its damage ratio patched to 1.0.
+    private var raidInterceptArmed = false
+
     // Number of rounds to report in the WIN patch (field[5] wonRounds = field[7] totalRounds).
     // Range 1–9. Default 3 (standard Shadow Fight 3 battle).
     private var roundsToWin: Int = 3
@@ -117,6 +121,50 @@ class OverlayService : Service() {
         // Mark autoSetBattleId so updateEventsPanel() doesn't overwrite with null lookup.
         autoSetBattleId = currentBattleId
         Toast.makeText(this, "Clan rounds auto-detected: $rounds", Toast.LENGTH_SHORT).show()
+    }
+
+    // ── Raid fight observer ────────────────────────────────────────────────
+    // Fires when ViewModel detects outbound raid_fight_start (active=true) or
+    // inbound raid_fight_finish server ACK (active=false).
+    private val raidFightObserver = Observer<Boolean> { active ->
+        updateRaidPanel(active)
+    }
+
+    private fun updateRaidPanel(active: Boolean) {
+        val v         = overlayView ?: return
+        val statusTv  = v.findViewById<TextView>(R.id.tv_raid_status)    ?: return
+        val btn       = v.findViewById<TextView>(R.id.btn_raid_max_dmg)  ?: return
+        val armStatus = v.findViewById<TextView>(R.id.tv_raid_arm_status) ?: return
+
+        if (!active) {
+            if (raidInterceptArmed) {
+                raidInterceptArmed = false
+                TrafficVpnService.instance?.disarmRaidIntercept()
+            }
+            statusTv.text = "NO ACTIVE RAID"
+            statusTv.setTextColor(Color.parseColor("#FF8B949E"))
+            btn.visibility = View.GONE
+            armStatus.visibility = View.GONE
+            return
+        }
+
+        statusTv.text = "RAID FIGHT ACTIVE"
+        statusTv.setTextColor(Color.parseColor("#FF3FB950"))
+        btn.visibility = View.VISIBLE
+
+        if (raidInterceptArmed) {
+            btn.text = "⚡ ARMED — play to fight end"
+            btn.setTextColor(Color.parseColor("#FF0D1117"))
+            btn.setBackgroundColor(Color.parseColor("#FFD29922"))
+            armStatus.text = "raid_fight_finish → field[2]=1.0 (boss killed)"
+            armStatus.setTextColor(Color.parseColor("#FFD29922"))
+            armStatus.visibility = View.VISIBLE
+        } else {
+            btn.text = "ARM MAX DMG"
+            btn.setTextColor(Color.parseColor("#FF0D1117"))
+            btn.setBackgroundColor(Color.parseColor("#FFDA3633"))
+            armStatus.visibility = View.GONE
+        }
     }
 
     // ── Win confirmation observer (via event stream) ──────────────────────
@@ -240,6 +288,7 @@ class OverlayService : Service() {
         AppState.viewModel.gameEvents.observeForever(winObserver)
         AppState.viewModel.currentBattle.observeForever(battleObserver)
         AppState.viewModel.clanRounds.observeForever(clanRoundsObserver)
+        AppState.viewModel.raidFightActive.observeForever(raidFightObserver)
         // Kick off background download of battle → rounds table.
         BattleConfig.fetchAsync(
             onLoaded = { count, version ->
@@ -368,6 +417,26 @@ class OverlayService : Service() {
                 roundsToWin++
                 roundsValueTv?.text = roundsToWin.toString()
             }
+        }
+
+        // ── ARM MAX DMG button (raid intercept) ──────────────────────────
+        view.findViewById<TextView>(R.id.btn_raid_max_dmg)?.setOnClickListener {
+            val armStatus = view.findViewById<TextView>(R.id.tv_raid_arm_status)
+            val vpnInstance = TrafficVpnService.instance
+            if (vpnInstance == null) {
+                armStatus?.text = "✗ FAIL: VPN not running"
+                armStatus?.setTextColor(Color.parseColor("#FFFF4444"))
+                armStatus?.visibility = View.VISIBLE
+                return@setOnClickListener
+            }
+            if (raidInterceptArmed) {
+                raidInterceptArmed = false
+                vpnInstance.disarmRaidIntercept()
+            } else {
+                raidInterceptArmed = true
+                vpnInstance.armRaidIntercept()
+            }
+            updateRaidPanel(AppState.viewModel.raidFightActive.value == true)
         }
 
         // ── Win Battle button (ARM WIN mode) ─────────────────────────────
@@ -505,6 +574,7 @@ class OverlayService : Service() {
         AppState.viewModel.gameEvents.removeObserver(winObserver)
         AppState.viewModel.currentBattle.removeObserver(battleObserver)
         AppState.viewModel.clanRounds.removeObserver(clanRoundsObserver)
+        AppState.viewModel.raidFightActive.removeObserver(raidFightObserver)
         serviceScope.cancel()
         removeOverlay()
         removeMini()

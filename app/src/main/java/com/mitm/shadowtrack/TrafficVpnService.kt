@@ -221,6 +221,12 @@ class TrafficVpnService : VpnService() {
         tcpHandler?.disarmIntercept()
     }
 
+    /** Arm the raid damage intercept — next outbound raid_fight_finish will report max damage (boss killed). */
+    fun armRaidIntercept() { tcpHandler?.armRaidIntercept() }
+
+    /** Cancel a previously armed raid intercept without firing it. */
+    fun disarmRaidIntercept() { tcpHandler?.disarmRaidIntercept() }
+
     fun stopVpn() {
         captureJob?.cancel()
         tcpHandler?.shutdown()

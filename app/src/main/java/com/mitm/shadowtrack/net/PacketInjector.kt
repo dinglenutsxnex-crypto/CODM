@@ -168,6 +168,85 @@ object PacketInjector {
         return null
     }
 
+    /**
+     * Surgically patches the game's own raid_fight_finish packet so that
+     * params.field[2] fixed32 (the damage/boss_max_hp ratio) is set to 1.0,
+     * meaning 100% of boss HP was dealt — boss reduced to 0 HP.
+     *
+     * Confirmed from hammerscale capture: the packet is always a small (0x01) frame,
+     * params.field[2] has tag byte 0x15 = (field_num 2 << 3) | wire_type 5 (fixed32),
+     * followed by exactly 4 bytes.  Setting those 4 bytes to [0x00, 0x00, 0x80, 0x3F]
+     * encodes LE IEEE 754 float 1.0 — no length bytes change so no further surgery needed.
+     *
+     * Returns the patched copy on success, or null if the tag is not found / parse fails.
+     */
+    fun patchRaidFightFinishToMaxDamage(data: ByteArray): ByteArray? {
+        if (data.size < 3 || (data[0].toInt() and 0xFF) != 0x01) return null
+        val frameLen = data[1].toInt() and 0xFF
+        val protoEnd = 2 + frameLen
+        if (data.size < protoEnd) return null
+
+        var pos = 2
+        while (pos < protoEnd) {
+            val tagByte = data[pos].toInt() and 0xFF; pos++
+            val fieldNum = tagByte ushr 3; val wireType = tagByte and 7
+            when (wireType) {
+                0 -> {
+                    while (pos < protoEnd && (data[pos].toInt() and 0x80) != 0) pos++
+                    pos++
+                }
+                2 -> {
+                    var len = 0; var shift = 0
+                    while (pos < protoEnd) {
+                        val b = data[pos++].toInt() and 0xFF
+                        len = len or ((b and 0x7F) shl shift)
+                        if (b and 0x80 == 0) break; shift += 7
+                    }
+                    if (fieldNum != 3) { pos += len; continue }
+                    val paramsStart = pos
+                    val paramsEnd   = pos + len
+
+                    var pp = paramsStart
+                    while (pp < paramsEnd) {
+                        val ptag = data[pp].toInt() and 0xFF; pp++
+                        val pf = ptag ushr 3; val pw = ptag and 7
+                        when (pw) {
+                            0 -> {
+                                while (pp < paramsEnd && (data[pp].toInt() and 0x80) != 0) pp++
+                                pp++
+                            }
+                            2 -> {
+                                var plen = 0; var ps = 0
+                                while (pp < paramsEnd) {
+                                    val b = data[pp++].toInt() and 0xFF
+                                    plen = plen or ((b and 0x7F) shl ps)
+                                    if (b and 0x80 == 0) break; ps += 7
+                                }
+                                pp += plen
+                            }
+                            5 -> {
+                                if (pf == 2 && pp + 4 <= paramsEnd) {
+                                    return data.copyOf().also { copy ->
+                                        copy[pp]     = 0x00
+                                        copy[pp + 1] = 0x00
+                                        copy[pp + 2] = 0x80.toByte()
+                                        copy[pp + 3] = 0x3F
+                                    }
+                                }
+                                pp += 4
+                            }
+                            1 -> pp += 8
+                            else -> return null
+                        }
+                    }
+                    return null
+                }
+                else -> return null
+            }
+        }
+        return null
+    }
+
     // ── Proto writer ──────────────────────────────────────────────────────
 
     private fun proto(block: ProtoWriter.() -> Unit): ByteArray {

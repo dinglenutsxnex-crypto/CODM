@@ -278,6 +278,54 @@
             android:layout_marginTop="10dp"
             android:visibility="gone" />
 
+        <!-- ── Divider ── -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#FF30363D"
+            android:layout_marginTop="16dp" />
+
+        <!-- ── Raid section ── -->
+        <TextView
+            android:id="@+id/tv_raid_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="NO ACTIVE RAID"
+            android:textColor="#FF8B949E"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:layout_marginTop="14dp"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/btn_raid_max_dmg"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="ARM MAX DMG"
+            android:textColor="#FF0D1117"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:background="#FFDA3633"
+            android:clickable="true"
+            android:focusable="true"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tv_raid_arm_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#FF58A6FF"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:layout_marginTop="8dp"
+            android:visibility="gone" />
+
     </LinearLayout>
 
     <!-- ── Status bar ── -->
