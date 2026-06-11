@@ -72,6 +72,13 @@ LISTEN_ADDR = "0.0.0.0"
 
 PATCH_ENABLED = True
 
+# How many rounds to claim as won/total when patching a finish_fight.
+# Event battles require winning this many rounds — the game sends field[7]=1
+# when the player exits early (loss/forfeit), so we must NOT derive this from
+# the game's packet.  Override with SF3_ROUNDS env var if the event uses a
+# different count (e.g. SF3_ROUNDS=5 for a 5-round survival).
+ROUNDS_TO_WIN = int(os.environ.get("SF3_ROUNDS", 3))
+
 # ── WIN constants from verified real-win capture (3002601_battle_win) ────────
 #
 # These come from user_194.7.bin — the actual packet the game sent when it won.
@@ -231,21 +238,23 @@ def _patch_finish_fight(payload: bytes) -> bytes:
 
     battle_id = None
     seed_bytes = None
-    rounds = 3
 
     for fn, wire, val in inner_fields:
         if fn == 1 and wire == 0:
             battle_id = val
         elif fn == 6 and wire == 2:
             seed_bytes = val
-        elif fn == 7 and wire == 0:
-            rounds = max(val, 1)
+        # field[7] from the game packet is intentionally ignored:
+        # on a forfeit/exit the game sends field[7]=1 regardless of the
+        # battle's actual round requirement.  ROUNDS_TO_WIN is the truth.
 
     if battle_id is None:
         return payload
 
     if seed_bytes is None:
         seed_bytes = _enc_vf(1, int(time.time() * 1000))
+
+    rounds = ROUNDS_TO_WIN
 
     new_inner = (
         _enc_vf(1, battle_id)
@@ -308,6 +317,7 @@ def _pipe_game_to_server(game_sock: socket.socket, server_sock: socket.socket):
                 server_sock.sendall(new_frame)
                 patched_count += 1
                 _log(f"[PATCH #{patched_count}] finish_fight → WIN  "
+                     f"rounds={ROUNDS_TO_WIN}  "
                      f"orig={len(raw_frame)}B  patched={len(new_frame)}B")
             else:
                 server_sock.sendall(raw_frame)
@@ -361,7 +371,8 @@ def main():
     _log(f"  Target : {TARGET_HOST}:{TARGET_PORT}")
     _log(f"  Patch  : {'ENABLED' if PATCH_ENABLED else 'DISABLED (monitor mode)'}")
     _log(f"")
-    _log(f"  Patching: event_battle_finish_fight  field[4]→WIN(1)")
+    _log(f"  Patching: event_battle_finish_fight  field[4]→WIN(1)  rounds={ROUNDS_TO_WIN}")
+    _log(f"  (override rounds via SF3_ROUNDS env var if battle needs != 3)")
     _log(f"  All other packets forwarded as raw bytes")
     _log(f"")
 
