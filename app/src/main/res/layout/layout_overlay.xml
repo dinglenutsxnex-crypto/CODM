@@ -5,7 +5,8 @@
     android:layout_width="360dp"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="#EE0D1117"
+    android:background="@drawable/overlay_bg"
+    android:clipToOutline="true"
     android:elevation="12dp">
 
     <!-- ── Header (drag handle) ── -->
@@ -14,7 +15,7 @@
         android:layout_width="match_parent"
         android:layout_height="52dp"
         android:orientation="horizontal"
-        android:background="#FF161B22"
+        android:background="@drawable/overlay_header_bg"
         android:gravity="center_vertical"
         android:paddingStart="12dp"
         android:paddingEnd="4dp">

@@ -48,6 +48,12 @@ class MainActivity : AppCompatActivity() {
             if (viewModel.vpnRunning.value == true) stopVpn() else requestVpnPermission()
         }
 
+        binding.tvDiscordLink.setOnClickListener {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://discord.gg/AW9vGhVA2j")).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            })
+        }
+
         observeViewModel()
 
         // Request overlay permission on first launch so it's ready when needed
