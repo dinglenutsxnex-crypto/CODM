@@ -113,6 +113,29 @@ object GameProtocolParser {
         return (readProtoFields(payload)[1] as? Long)?.takeIf { it > 0 }
     }
 
+    /**
+     * If [data] is a COMPLETE outbound event_battle_finish_fight SF3 frame, returns
+     * Pair(battleId, counter) so TcpHandler can build a replacement WIN packet.
+     * Returns null for any other command, partial frame, or parse failure.
+     *
+     * This is used by the "ARM WIN" intercept path: instead of injecting mid-fight
+     * (which the game client ignores because its state machine is in "playing" mode),
+     * HAMMERSCALE waits for the game's own finish_fight, replaces it with a WIN packet
+     * using the SAME counter, so the server responds on the connection the game was
+     * already waiting on → game client processes the win and shows the WIN screen.
+     */
+    fun tryExtractFinishFight(data: ByteArray): Pair<Long, Long>? {
+        val payload = extractPayload(data) ?: return null
+        val fields  = readProtoFields(payload)
+        val counter = (fields[1] as? Long)?.takeIf { it > 0 } ?: return null
+        val cmd     = (fields[2] as? ByteArray)?.toString(Charsets.UTF_8) ?: return null
+        if (cmd != "event_battle_finish_fight") return null
+        val params  = fields[3] as? ByteArray ?: return null
+        val battleId = (readProtoFields(params)[1] as? Long)
+            ?.takeIf { isBattleIdCandidate(it) } ?: return null
+        return battleId to counter
+    }
+
     // ── Framing ───────────────────────────────────────────────────────────
 
     private fun extractPayload(data: ByteArray): ByteArray? {

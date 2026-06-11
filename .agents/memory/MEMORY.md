@@ -1,0 +1,1 @@
+- [SF3 intercept root cause](sf3-intercept-root-cause.md) — mid-fight injection wins server-side but game ignores it; ARM-WIN intercept-and-replace is the fix

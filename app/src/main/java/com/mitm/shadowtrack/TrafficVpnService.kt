@@ -206,6 +206,21 @@ class TrafficVpnService : VpnService() {
         }
     }
 
+    /**
+     * Arm the ARM-WIN intercept: the next outbound event_battle_finish_fight packet
+     * from the SF3 game client will be silently replaced with a crafted WIN packet
+     * (same counter, same connection) so the server responds on the connection the
+     * game is already waiting on, causing the game to display the WIN screen.
+     */
+    fun armIntercept() {
+        tcpHandler?.armIntercept()
+    }
+
+    /** Cancel a previously armed intercept without firing it. */
+    fun disarmIntercept() {
+        tcpHandler?.disarmIntercept()
+    }
+
     fun stopVpn() {
         captureJob?.cancel()
         tcpHandler?.shutdown()

@@ -40,6 +40,10 @@ class OverlayService : Service() {
     private var currentBattleId: String? = null
     private var lastWinConfirmedId: String? = null
 
+    // True while the ARM-WIN intercept is set in TcpHandler.
+    // The next outbound finish_fight from the game will be replaced with a WIN packet.
+    private var interceptIsArmed = false
+
     // Background scope for IO work (e.g. injectDirect) that must not run on main thread.
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -115,35 +119,52 @@ class OverlayService : Service() {
         val id = currentBattleId
         when {
             id != null -> {
-                // Active battle waiting for a win injection.
+                // Active battle — show ARM WIN button.
                 // This is the ONLY branch that resets winStatus — a new battle starting
-                // means any previous injection result is stale and should be cleared.
+                // means any previous result is stale.
                 statusTv.text = "BATTLE ACTIVE"
                 statusTv.setTextColor(Color.parseColor("#FF3FB950"))
                 idTv.text = "battle_id: $id"
                 idTv.visibility = View.VISIBLE
                 winBtn.visibility = View.VISIBLE
-                winStatus.visibility = View.GONE
                 lastWinConfirmedId = null
+
+                if (interceptIsArmed) {
+                    // Intercept is set — button shows armed state, status shows hint.
+                    winBtn.text = "⚡ ARMED — play to fight end"
+                    winBtn.setTextColor(Color.parseColor("#FF0D1117"))
+                    winBtn.setBackgroundColor(Color.parseColor("#FFD29922"))
+                    winStatus.text = "finish_fight will be replaced with WIN"
+                    winStatus.setTextColor(Color.parseColor("#FFD29922"))
+                    winStatus.visibility = View.VISIBLE
+                } else {
+                    winBtn.text = "ARM WIN"
+                    winBtn.setTextColor(Color.parseColor("#FF0D1117"))
+                    winBtn.setBackgroundColor(Color.parseColor("#FF3FB950"))
+                    winStatus.visibility = View.GONE
+                }
             }
             lastWinConfirmedId != null -> {
-                // Server confirmed the win — leave winStatus alone so the
-                // ">> injected / SENT" or error text stays readable.
+                // Server confirmed the win.
+                interceptIsArmed = false
                 statusTv.text = "WIN CONFIRMED"
                 statusTv.setTextColor(Color.parseColor("#FF3FB950"))
                 idTv.text = "battle_id: $lastWinConfirmedId  /  server ACK"
                 idTv.visibility = View.VISIBLE
                 winBtn.visibility = View.GONE
-                // winStatus intentionally NOT touched here
+                // winStatus intentionally NOT touched — shows the last intercept/inject result
             }
             else -> {
-                // No battle and no recent win — leave winStatus alone too so any
-                // FAIL error from the last injection attempt stays visible.
+                // No battle, no recent win — disarm any leftover arm state.
+                if (interceptIsArmed) {
+                    interceptIsArmed = false
+                    TrafficVpnService.instance?.disarmIntercept()
+                }
                 statusTv.text = "NO ACTIVE BATTLE"
                 statusTv.setTextColor(Color.parseColor("#FF8B949E"))
                 idTv.visibility = View.GONE
                 winBtn.visibility = View.GONE
-                // winStatus intentionally NOT touched here
+                // winStatus intentionally NOT touched
             }
         }
     }
@@ -257,54 +278,35 @@ class OverlayService : Service() {
             updateEventsPanel()
         }
 
-        // ── Win Battle button ─────────────────────────────────────────────
+        // ── Win Battle button (ARM WIN mode) ─────────────────────────────
+        // ARM WIN is the correct MITM approach: instead of injecting mid-fight
+        // (which the game client ignores — it's busy playing and not waiting for a
+        // server response), we arm an intercept that fires when the game naturally
+        // sends its own event_battle_finish_fight (on fight end / surrender / timeout).
+        // HAMMERSCALE replaces that packet with a crafted WIN using the SAME counter,
+        // so the server responds on the connection the game is already listening on.
+        // The game processes the win response and shows the WIN screen.
         view.findViewById<TextView>(R.id.btn_win_battle).setOnClickListener {
             val winStatus = view.findViewById<TextView>(R.id.tv_win_status)
-            winStatus.visibility = View.VISIBLE
 
-            val id = currentBattleId
-            if (id == null) {
-                winStatus.text = "✗ FAIL: currentBattleId=null"
-                winStatus.setTextColor(Color.parseColor("#FFFF4444"))
-                return@setOnClickListener
-            }
-            val idLong = id.toLongOrNull()
-            if (idLong == null) {
-                winStatus.text = "✗ FAIL: id='$id' not a Long"
-                winStatus.setTextColor(Color.parseColor("#FFFF4444"))
-                return@setOnClickListener
-            }
             val vpnInstance = TrafficVpnService.instance
             if (vpnInstance == null) {
-                winStatus.text = "✗ FAIL: VPN instance=null"
+                winStatus.text = "✗ FAIL: VPN not running"
                 winStatus.setTextColor(Color.parseColor("#FFFF4444"))
+                winStatus.visibility = View.VISIBLE
                 return@setOnClickListener
             }
 
-            // Snapshot counter on main thread (safe — AtomicLong read)
-            val vm      = AppState.viewModel
-            val counter = vm.nextInjectCounter
-            val packet  = com.mitm.shadowtrack.net.PacketInjector.buildFinishFight(idLong, counter)
-
-            winStatus.text = "⏳ sending…  ctr=$counter"
-            winStatus.setTextColor(Color.parseColor("#FF8B949E"))
-
-            // injectDirect does a blocking channel write — must NOT run on main thread.
-            serviceScope.launch {
-                val result = try {
-                    vpnInstance.injectDirect(packet)
-                } catch (e: Exception) {
-                    "EXCEPTION: ${e.message}"
-                }
-                val ok = result.startsWith("SENT")
-                withContext(Dispatchers.Main) {
-                    winStatus.text = if (ok) ">> injected  ctr=$counter\n$result"
-                                     else "✗ $result"
-                    winStatus.setTextColor(
-                        if (ok) Color.parseColor("#FF3FB950")
-                        else    Color.parseColor("#FFFF4444")
-                    )
-                }
+            if (interceptIsArmed) {
+                // Second press while armed → disarm / cancel
+                interceptIsArmed = false
+                vpnInstance.disarmIntercept()
+                updateEventsPanel()
+            } else {
+                // First press → arm the intercept
+                interceptIsArmed = true
+                vpnInstance.armIntercept()
+                updateEventsPanel()
             }
         }
 

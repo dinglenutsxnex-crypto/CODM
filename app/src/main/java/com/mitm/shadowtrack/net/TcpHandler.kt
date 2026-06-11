@@ -58,6 +58,20 @@ class TcpHandler(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val outStream = FileOutputStream(vpnFd)
 
+    // ── Intercept-and-replace flag ────────────────────────────────────────
+    // When set, the next outbound event_battle_finish_fight packet is silently
+    // replaced with a crafted WIN packet before being forwarded to the server.
+    // This is the correct MITM approach: the game client sent the request so its
+    // state machine is in "waiting for server response" mode → the server's WIN
+    // response is processed normally and the win screen is shown.
+    private val interceptArmed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Arm the finish_fight intercept. The next outbound finish_fight is replaced with a WIN. */
+    fun armIntercept() { interceptArmed.set(true) }
+
+    /** Disarm without firing (e.g. user cancelled or battle ended without a finish_fight). */
+    fun disarmIntercept() { interceptArmed.set(false) }
+
     fun handlePacket(packet: ParsedPacket) {
         val tcp = packet.tcp ?: return
         val connKey = "${packet.ip.srcAddr.address.joinToString(".")}:${tcp.srcPort}->" +
@@ -152,19 +166,40 @@ class TcpHandler(
                 text.contains("Upgrade: WebSocket", ignoreCase = true)) {
                 conn.awaitingWsHandshake = true
             }
+
+            // ── ARM-WIN intercept ────────────────────────────────────────────
+            // If the intercept is armed and this segment is a complete outbound
+            // event_battle_finish_fight frame, swap it for a crafted WIN packet.
+            // We send the WIN using the SAME counter the game used, so the server
+            // responds on the SAME connection the game's state machine is waiting on.
+            // The game client then processes the win response and shows the WIN screen.
+            //
+            // The finish_fight frame is always a small packet (≤ 57 B in captures)
+            // so it always arrives as one complete TCP segment — no partial-frame risk.
+            val interceptedWin: ByteArray? = if (interceptArmed.get()) {
+                GameProtocolParser.tryExtractFinishFight(packet.payload)
+                    ?.let { (battleId, counter) ->
+                        interceptArmed.set(false)
+                        PacketInjector.buildFinishFight(battleId, counter)
+                    }
+            } else null
+
+            // What actually goes to the server (and appears in the LOGS)
+            val payloadForServer = interceptedWin ?: packet.payload
+
             // Buffer and reassemble SF3 frames — large packets (e.g. get_player at 9 KB
             // compressed) arrive across many TCP segments; passing a partial segment to the
             // parser returns null and we'd lose counter tracking and battle detection.
-            conn.outboundSf3Buffer.write(packet.payload)
+            conn.outboundSf3Buffer.write(payloadForServer)
             parseSf3Frames(conn.connId, conn.outboundSf3Buffer, LiveMessage.Direction.OUTBOUND)
+
+            conn.outboundQueue.trySend(payloadForServer)
         } else {
             // WS is established — buffer and parse outbound frames (client→server, masked)
             conn.outboundWsBuffer.write(packet.payload)
             parseWsFrames(conn.connId, conn.outboundWsBuffer, LiveMessage.Direction.OUTBOUND)
+            conn.outboundQueue.trySend(packet.payload)
         }
-
-        // Queue the raw bytes for the writer loop to send to the real server
-        conn.outboundQueue.trySend(packet.payload)
     }
 
     private fun handleFin(connKey: String) {

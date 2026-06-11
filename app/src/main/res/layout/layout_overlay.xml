@@ -199,7 +199,7 @@
             android:id="@+id/btn_win_battle"
             android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:text="WIN BATTLE"
+            android:text="ARM WIN"
             android:textColor="#FF0D1117"
             android:textSize="14sp"
             android:textStyle="bold"
