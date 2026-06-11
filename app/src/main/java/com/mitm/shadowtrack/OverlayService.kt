@@ -232,6 +232,11 @@ class OverlayService : Service() {
                     val labelTv = v.findViewById<android.widget.TextView>(R.id.tv_rounds_label)
                     if (autoRounds != null) {
                         roundsToWin = autoRounds
+                        // If the intercept was already armed (user-mode auto-armed before
+                        // BattleConfig responded), update the stored rounds value now.
+                        if (interceptIsArmed) {
+                            TrafficVpnService.instance?.armIntercept(roundsToWin)
+                        }
                         overlayView?.findViewById<android.widget.TextView>(R.id.tv_rounds_value)
                             ?.text = roundsToWin.toString()
                         labelTv?.text = "max rounds  "
