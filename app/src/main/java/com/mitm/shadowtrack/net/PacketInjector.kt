@@ -17,42 +17,61 @@ import java.util.zip.Deflater
  *   field[2] string = command
  *   field[3] bytes  = params
  *
- * Verified against captured outbound event_battle_finish_fight packet (user_3):
+ * WIN params verified from 3002601_battle_win capture / user_194.7.bin (REAL WIN):
  *
- *   envelope:
- *     field[1] varint = 34          (counter at that point in that captured session)
- *     field[2] string = "event_battle_finish_fight"
- *     field[3] bytes  = params
- *
- *   params:
- *     field[1]  varint = battleId
- *     field[4]  varint = 3                 (constant)
- *     field[6]  bytes  = {field[1] = seed} (seed nested proto, 7 bytes in capture)
- *     field[7]  varint = 1                 (win outcome)
- *     field[10] bytes  = ""                (empty)
- *     field[13] bytes  = {field[2] = 29}   (result payload, nested proto)
+ *   field[1]  varint = battleId
+ *   field[4]  varint = 1       WIN  ← NOT 3. The game sends 3 on a LOSS — do NOT copy that.
+ *   field[5]  varint = rounds   wonRounds  (absent in loss packet)
+ *   field[6]  bytes  = {field[1] = ts_ms}  live timestamp proto
+ *   field[7]  varint = rounds   totalRounds  (game sends 1 on loss)
+ *   field[10] bytes  = WIN_ITEMS  equipped items (empty in loss)
+ *   field[13] bytes  = WIN_STATS  71-byte fight stats (2-byte junk in loss)
+ *   field[14] varint = 28      player level (absent in loss)
  */
 object PacketInjector {
 
+    // ── WIN constants from 3002601_battle_win / user_194.7.bin ───────────────
+    // Items:  two equipped items, IDs 1617 + 1618, both level 4
+    // Stats:  71-byte fight stats blob from the real win packet
+    // Level:  28 (field[14] in the real win packet)
+    private val WIN_ITEMS = byteArrayOf(
+        0x0a, 0x05, 0x08, 0xd1.toByte(), 0x0c, 0x10, 0x04,
+        0x0a, 0x05, 0x08, 0xd2.toByte(), 0x0c, 0x10, 0x04
+    )
+    private val WIN_STATS = byteArrayOf(
+        0x08, 0x1c, 0x10, 0x4c, 0x1a, 0x03, 0x08, 0x0c, 0x08, 0x22, 0x03, 0x10, 0x12, 0x0e,
+        0x2a, 0x03, 0x04, 0x07, 0x04, 0x32, 0x0c, 0x00, 0x00, 0x80.toByte(), 0x3f, 0xb2.toByte(),
+        0xd7.toByte(), 0x7b, 0x3f, 0x00, 0x00, 0x80.toByte(), 0x3f, 0x3a, 0x0c, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42, 0x0c, 0xd6.toByte(), 0xa3.toByte(),
+        0x60, 0x3e, 0xd6.toByte(), 0xa3.toByte(), 0x60, 0x3e, 0xd8.toByte(), 0xa3.toByte(), 0x60, 0x3e,
+        0x4a, 0x03, 0x26, 0x3c, 0x24, 0x52, 0x03, 0x00, 0x01, 0x00
+    )
+    private const val WIN_LEVEL = 28L
+
     /**
-     * Build a finish-fight win packet.
+     * Build a finish-fight WIN packet using the game's own battleId and counter.
      *
-     * @param battleId  The battle ID captured from the outbound event_battle_start_fight packet.
-     * @param counter   The next outbound sequence counter — pass ConnectionViewModel.nextInjectCounter.
-     *                  Using the wrong counter (e.g. a hardcoded value) causes the server to treat
-     *                  the packet as a duplicate and silently ignore it.
+     * Called from TcpHandler's ARM-WIN intercept path: the game sent its natural
+     * finish_fight (with loss values), we extracted battleId + counter from it,
+     * and now send this replacement instead so the server sees a WIN on the exact
+     * connection the game's state machine is already waiting on.
+     *
+     * @param battleId  From tryExtractFinishFight — the battle the game just finished.
+     * @param counter   The game's own counter from that packet — reused verbatim.
+     * @param rounds    Rounds to report as won/total. Default 3 matches event battles.
      */
-    fun buildFinishFight(battleId: Long, counter: Long): ByteArray {
-        val seedProto  = proto { varintField(1, System.currentTimeMillis()) }
-        val resProto   = proto { varintField(2, 29L) }
+    fun buildFinishFight(battleId: Long, counter: Long, rounds: Long = 3L): ByteArray {
+        val seedProto = proto { varintField(1, System.currentTimeMillis()) }
 
         val params = proto {
             varintField(1,  battleId)
-            varintField(4,  3L)
-            bytesField(6,   seedProto)
-            varintField(7,  1L)
-            bytesField(10,  ByteArray(0))
-            bytesField(13,  resProto)
+            varintField(4,  1L)          // WIN
+            varintField(5,  rounds)      // wonRounds
+            bytesField(6,   seedProto)   // live timestamp
+            varintField(7,  rounds)      // totalRounds
+            bytesField(10,  WIN_ITEMS)
+            bytesField(13,  WIN_STATS)
+            varintField(14, WIN_LEVEL)
         }
         return envelope("event_battle_finish_fight", params, counter = counter)
     }
