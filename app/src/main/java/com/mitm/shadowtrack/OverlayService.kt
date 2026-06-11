@@ -140,7 +140,14 @@ class OverlayService : Service() {
     // ── Raid fight observer ────────────────────────────────────────────────
     private val raidFightObserver = Observer<Boolean> { active ->
         updateRaidPanel(active)
-        if (isUserMode) updateUserModeRaidLabel(active)
+        if (isUserMode) {
+            updateUserModeRaidLabel(active)
+            // Auto-arm when raid starts if toggle is ON; updateRaidPanel handles disarm on end.
+            if (active && userRaidEnabled && !raidInterceptArmed) {
+                raidInterceptArmed = true
+                TrafficVpnService.instance?.armRaidIntercept()
+            }
+        }
     }
 
     // ── Game events observer (used to detect battle type for user-mode labels) ──
