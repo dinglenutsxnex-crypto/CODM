@@ -51,77 +51,111 @@ object PacketInjector {
     /**
      * Surgically patch the game's own finish_fight packet to report a WIN.
      *
-     * Takes the raw SF3 frame the game was about to send, makes a copy, navigates
-     * the protobuf bytes to find field[4] inside the params, and sets its value to
-     * 1 (WIN). Every other byte — battleId, counter, rounds, items, stats, level —
-     * is preserved exactly as the game set it.
+     * Takes the raw SF3 frame the game was about to send, makes a copy, and makes
+     * the minimum edits required for the server to accept it as a WIN:
      *
-     * field[4] is always a single-byte varint (values 1–3), so the packet length
-     * never changes and no re-framing is required.
+     *   1. Flips params.field[4] from 3 (LOSS) → 1 (WIN) in-place.
+     *   2. Appends params.field[5] = field[7] (wonRounds = totalRounds) if absent.
+     *      The server validates "check result and wonRounds" — result=WIN without
+     *      wonRounds gets an IllegalArgumentException.
      *
-     * Returns the patched packet on success, or null if parsing fails (caller must log and abort).
+     * All other bytes — battleId, counter, seed, items, stats, level — are
+     * preserved exactly as the game sent them.
+     *
+     * Returns the patched packet on success, or null if parsing fails (caller logs and drops).
      */
     fun patchFinishFightToWin(data: ByteArray): ByteArray? {
         if (data.size < 3 || (data[0].toInt() and 0xFF) != 0x01) return null
-        val out = data.copyOf()
-        val protoEnd = 2 + (data[1].toInt() and 0xFF)
+        val frameLen = data[1].toInt() and 0xFF
+        val protoEnd = 2 + frameLen
+        if (data.size < protoEnd) return null
 
-        // Walk the outer envelope to find field[3] (params), tag = 0x1a (LEN wire type)
+        // Walk the outer envelope to find field[3] (params)
         var pos = 2
         while (pos < protoEnd) {
-            val tagByte = out[pos].toInt() and 0xFF
+            val tagByte = data[pos].toInt() and 0xFF
             pos++
             val fieldNum = tagByte ushr 3
             val wireType = tagByte and 7
             when (wireType) {
-                0 -> { while (pos < protoEnd && (out[pos].toInt() and 0x80) != 0) pos++; pos++ }
+                0 -> { while (pos < protoEnd && (data[pos].toInt() and 0x80) != 0) pos++; pos++ }
                 2 -> {
-                    var len = 0; var shift = 0
+                    val paramsLenBytePos = pos  // remember where the length byte is
+                    var len = 0; var shift = 0; var lenByteCount = 0
                     while (pos < protoEnd) {
-                        val b = out[pos++].toInt() and 0xFF
+                        val b = data[pos++].toInt() and 0xFF; lenByteCount++
                         len = len or ((b and 0x7F) shl shift)
                         if (b and 0x80 == 0) break
                         shift += 7
                     }
-                    if (fieldNum == 3) {
-                        // Found params — walk it to find field[4], tag = 0x20
-                        val paramsEnd = pos + len
-                        var pp = pos
-                        while (pp < paramsEnd) {
-                            val ptag = out[pp].toInt() and 0xFF
-                            pp++
-                            val pField = ptag ushr 3
-                            val pWire  = ptag and 7
-                            when (pWire) {
-                                0 -> {
-                                    if (pField == 4) {
-                                        out[pp] = 0x01  // flip to WIN, leave all other bytes untouched
-                                        return out
-                                    }
-                                    while (pp < paramsEnd && (out[pp].toInt() and 0x80) != 0) pp++
-                                    pp++
+                    if (fieldNum != 3) { pos += len; continue }
+
+                    // params length must fit in one varint byte (<128) for simple surgery
+                    if (lenByteCount != 1) return null
+
+                    val paramsStart = pos
+                    val paramsEnd   = pos + len
+
+                    // First pass: collect field[4] value-byte position, field[7] value, field[5] presence
+                    var field4ValPos   = -1
+                    var field7Val      = 1L   // totalRounds — default 1 if not found
+                    var field5Present  = false
+                    var pp = paramsStart
+                    while (pp < paramsEnd) {
+                        val ptag = data[pp].toInt() and 0xFF; pp++
+                        val pf = ptag ushr 3; val pw = ptag and 7
+                        when (pw) {
+                            0 -> {
+                                val vPos = pp
+                                var v = 0L; var vs = 0
+                                while (pp < paramsEnd && (data[pp].toInt() and 0x80) != 0) {
+                                    v = v or ((data[pp].toLong() and 0x7F) shl vs); vs += 7; pp++
                                 }
-                                2 -> {
-                                    var plen = 0; var pshift = 0
-                                    while (pp < paramsEnd) {
-                                        val b = out[pp++].toInt() and 0xFF
-                                        plen = plen or ((b and 0x7F) shl pshift)
-                                        if (b and 0x80 == 0) break
-                                        pshift += 7
-                                    }
-                                    pp += plen
+                                v = v or ((data[pp].toLong() and 0x7F) shl vs); pp++
+                                when (pf) {
+                                    4 -> field4ValPos = vPos
+                                    5 -> field5Present = true
+                                    7 -> field7Val = v
                                 }
-                                else -> return null  // unexpected wire type inside params
                             }
+                            2 -> {
+                                var plen = 0; var ps2 = 0
+                                while (pp < paramsEnd) {
+                                    val b = data[pp++].toInt() and 0xFF
+                                    plen = plen or ((b and 0x7F) shl ps2)
+                                    if (b and 0x80 == 0) break; ps2 += 7
+                                }
+                                pp += plen
+                            }
+                            else -> return null
                         }
-                        return null  // params found but field[4] was not in it
                     }
-                    pos += len
+
+                    if (field4ValPos < 0) return null  // field[4] not found in params
+
+                    return if (field5Present) {
+                        // field[5] already there — just flip field[4]
+                        data.copyOf().also { it[field4ValPos] = 0x01 }
+                    } else {
+                        // Append field[5] = field[7] after existing params.
+                        // field[5] tag = (5 shl 3) or 0 = 0x28
+                        // field[7] is always 1–3, single-byte varint.
+                        // params is always the last envelope field, so appending to the
+                        // packet is safe — nothing follows params in the SF3 envelope.
+                        val extra = byteArrayOf(0x28, (field7Val and 0x7F).toByte())
+                        val result = ByteArray(data.size + extra.size)
+                        data.copyInto(result)
+                        result[field4ValPos]      = 0x01                           // flip result to WIN
+                        result[1]                 = (frameLen + extra.size).toByte() // extend frame length
+                        result[paramsLenBytePos]  = (len + extra.size).toByte()      // extend params length
+                        extra.copyInto(result, protoEnd)                           // append field[5]
+                        result
+                    }
                 }
-                else -> return null  // unexpected wire type in envelope
+                else -> return null
             }
         }
-        return null  // params field never found in envelope
+        return null
     }
 
     // ── Proto writer ──────────────────────────────────────────────────────
