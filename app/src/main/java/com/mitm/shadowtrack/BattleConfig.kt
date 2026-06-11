@@ -18,10 +18,8 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object BattleConfig {
 
-    // ── UPDATE THIS after pushing to GitHub ──────────────────────────────────
     private const val DATA_URL =
-        "https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/data/battles.json"
-    // ─────────────────────────────────────────────────────────────────────────
+        "https://raw.githubusercontent.com/dinglenutsxnex-crypto/THE/main/data/battles.json"
 
     private val map = ConcurrentHashMap<String, Int>()
 
@@ -47,10 +45,6 @@ object BattleConfig {
     fun fetchAsync() {
         Thread {
             try {
-                if (DATA_URL.contains("YOUR_USER")) {
-                    Log.w("BattleConfig", "DATA_URL not configured — skipping fetch")
-                    return@Thread
-                }
                 Log.d("BattleConfig", "Fetching battle data from $DATA_URL")
                 val conn = URL(DATA_URL).openConnection() as HttpURLConnection
                 conn.connectTimeout = 8_000
