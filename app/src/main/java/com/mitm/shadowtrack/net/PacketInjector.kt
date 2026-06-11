@@ -59,10 +59,10 @@ object PacketInjector {
      * field[4] is always a single-byte varint (values 1–3), so the packet length
      * never changes and no re-framing is required.
      *
-     * Returns the patched packet, or the original unchanged if parsing fails.
+     * Returns the patched packet on success, or null if parsing fails (caller must log and abort).
      */
-    fun patchFinishFightToWin(data: ByteArray): ByteArray {
-        if (data.size < 3 || (data[0].toInt() and 0xFF) != 0x01) return data
+    fun patchFinishFightToWin(data: ByteArray): ByteArray? {
+        if (data.size < 3 || (data[0].toInt() and 0xFF) != 0x01) return null
         val out = data.copyOf()
         val protoEnd = 2 + (data[1].toInt() and 0xFF)
 
@@ -111,17 +111,17 @@ object PacketInjector {
                                     }
                                     pp += plen
                                 }
-                                else -> return data
+                                else -> return null  // unexpected wire type inside params
                             }
                         }
-                        return data // field[4] not found in params
+                        return null  // params found but field[4] was not in it
                     }
                     pos += len
                 }
-                else -> return data
+                else -> return null  // unexpected wire type in envelope
             }
         }
-        return data
+        return null  // params field never found in envelope
     }
 
     // ── Proto writer ──────────────────────────────────────────────────────

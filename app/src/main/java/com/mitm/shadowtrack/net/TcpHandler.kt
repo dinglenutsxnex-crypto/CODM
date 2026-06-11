@@ -176,15 +176,17 @@ class TcpHandler(
             //
             // The finish_fight frame is always a small packet (≤ 57 B in captures)
             // so it always arrives as one complete TCP segment — no partial-frame risk.
-            val interceptedWin: ByteArray? = if (interceptArmed.get()) {
-                if (GameProtocolParser.tryExtractFinishFight(packet.payload) != null) {
-                    interceptArmed.set(false)
-                    PacketInjector.patchFinishFightToWin(packet.payload)
-                } else null
-            } else null
-
-            // What actually goes to the server (and appears in the LOGS)
-            val payloadForServer = interceptedWin ?: packet.payload
+            var payloadForServer = packet.payload
+            if (interceptArmed.get() && GameProtocolParser.tryExtractFinishFight(packet.payload) != null) {
+                interceptArmed.set(false)
+                val patched = PacketInjector.patchFinishFightToWin(packet.payload)
+                if (patched == null) {
+                    onMessage(connKey, LiveMessage(LiveMessage.Direction.OUTBOUND,
+                        "PATCH FAILED: field[4] not found — hex: ${packet.payload.joinToString(" ") { "%02x".format(it) }}".toByteArray()))
+                    return  // do NOT forward the unmodified loss packet
+                }
+                payloadForServer = patched
+            }
 
             // Buffer and reassemble SF3 frames — large packets (e.g. get_player at 9 KB
             // compressed) arrive across many TCP segments; passing a partial segment to the
