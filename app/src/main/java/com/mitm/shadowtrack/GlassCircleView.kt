@@ -9,18 +9,20 @@ class GlassCircleView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
+    private val clipPath = Path()
+
     private val blurPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(180, 10, 10, 20)
-        maskFilter = BlurMaskFilter(60f, BlurMaskFilter.Blur.NORMAL)
+        color = Color.argb(200, 10, 10, 25)
+        maskFilter = BlurMaskFilter(55f, BlurMaskFilter.Blur.NORMAL)
     }
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(120, 15, 15, 30)
+        color = Color.argb(110, 15, 15, 35)
     }
 
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = Color.argb(220, 63, 81, 181)
+        color = Color.argb(230, 63, 81, 181)
         strokeWidth = 4f
     }
 
@@ -28,12 +30,26 @@ class GlassCircleView @JvmOverloads constructor(
         setLayerType(LAYER_TYPE_SOFTWARE, null)
     }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        val cx = w / 2f
+        val cy = h / 2f
+        val r = (minOf(w, h) / 2f) - strokePaint.strokeWidth
+        clipPath.reset()
+        clipPath.addCircle(cx, cy, r, Path.Direction.CW)
+    }
+
     override fun onDraw(canvas: Canvas) {
         val cx = width / 2f
         val cy = height / 2f
         val r = (minOf(width, height) / 2f) - strokePaint.strokeWidth
+
+        canvas.save()
+        canvas.clipPath(clipPath)
         canvas.drawCircle(cx, cy, r, blurPaint)
         canvas.drawCircle(cx, cy, r, fillPaint)
+        canvas.restore()
+
         canvas.drawCircle(cx, cy, r, strokePaint)
     }
 }
