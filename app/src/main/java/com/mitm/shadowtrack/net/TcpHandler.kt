@@ -65,9 +65,14 @@ class TcpHandler(
     // state machine is in "waiting for server response" mode → the server's WIN
     // response is processed normally and the win screen is shown.
     private val interceptArmed = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val interceptRounds = java.util.concurrent.atomic.AtomicInteger(3)
 
-    /** Arm the finish_fight intercept. The next outbound finish_fight is replaced with a WIN. */
-    fun armIntercept() { interceptArmed.set(true) }
+    /** Arm the finish_fight intercept. The next outbound finish_fight is replaced with a WIN
+     *  using [roundsToWin] for both field[5] (wonRounds) and field[7] (totalRounds). */
+    fun armIntercept(roundsToWin: Int = 3) {
+        interceptRounds.set(roundsToWin.coerceIn(1, 127))
+        interceptArmed.set(true)
+    }
 
     /** Disarm without firing (e.g. user cancelled or battle ended without a finish_fight). */
     fun disarmIntercept() { interceptArmed.set(false) }
@@ -179,7 +184,7 @@ class TcpHandler(
             var payloadForServer = packet.payload
             if (interceptArmed.get() && GameProtocolParser.tryExtractFinishFight(packet.payload) != null) {
                 interceptArmed.set(false)
-                val patched = PacketInjector.patchFinishFightToWin(packet.payload)
+                val patched = PacketInjector.patchFinishFightToWin(packet.payload, interceptRounds.get())
                 if (patched == null) {
                     onMessage(connKey, LiveMessage(LiveMessage.Direction.OUTBOUND,
                         "PATCH FAILED: field[4] not found — hex: ${packet.payload.joinToString(" ") { "%02x".format(it) }}".toByteArray()))

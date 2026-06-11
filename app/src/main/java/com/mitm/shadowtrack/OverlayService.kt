@@ -44,6 +44,10 @@ class OverlayService : Service() {
     // The next outbound finish_fight from the game will be replaced with a WIN packet.
     private var interceptIsArmed = false
 
+    // Number of rounds to report in the WIN patch (field[5] wonRounds = field[7] totalRounds).
+    // Range 1–9. Default 3 (standard Shadow Fight 3 battle).
+    private var roundsToWin: Int = 3
+
     // Background scope for IO work (e.g. injectDirect) that must not run on main thread.
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -115,11 +119,12 @@ class OverlayService : Service() {
         val idTv      = v.findViewById<TextView>(R.id.tv_battle_id)     ?: return
         val winBtn    = v.findViewById<TextView>(R.id.btn_win_battle)   ?: return
         val winStatus = v.findViewById<TextView>(R.id.tv_win_status)    ?: return
+        val rowRounds = v.findViewById<View>(R.id.row_rounds)
 
         val id = currentBattleId
         when {
             id != null -> {
-                // Active battle — show ARM WIN button.
+                // Active battle — show ARM WIN button and rounds row.
                 // This is the ONLY branch that resets winStatus — a new battle starting
                 // means any previous result is stale.
                 statusTv.text = "BATTLE ACTIVE"
@@ -127,6 +132,7 @@ class OverlayService : Service() {
                 idTv.text = "battle_id: $id"
                 idTv.visibility = View.VISIBLE
                 winBtn.visibility = View.VISIBLE
+                rowRounds?.visibility = View.VISIBLE
                 lastWinConfirmedId = null
 
                 if (interceptIsArmed) {
@@ -152,6 +158,7 @@ class OverlayService : Service() {
                 idTv.text = "battle_id: $lastWinConfirmedId  /  server ACK"
                 idTv.visibility = View.VISIBLE
                 winBtn.visibility = View.GONE
+                rowRounds?.visibility = View.GONE
                 // winStatus intentionally NOT touched — shows the last intercept/inject result
             }
             else -> {
@@ -164,6 +171,7 @@ class OverlayService : Service() {
                 statusTv.setTextColor(Color.parseColor("#FF8B949E"))
                 idTv.visibility = View.GONE
                 winBtn.visibility = View.GONE
+                rowRounds?.visibility = View.GONE
                 // winStatus intentionally NOT touched
             }
         }
@@ -278,6 +286,24 @@ class OverlayService : Service() {
             updateEventsPanel()
         }
 
+        // ── Rounds counter ────────────────────────────────────────────────
+        val roundsValueTv = view.findViewById<TextView>(R.id.tv_rounds_value)
+        roundsValueTv?.text = roundsToWin.toString()
+
+        view.findViewById<TextView>(R.id.btn_rounds_dec)?.setOnClickListener {
+            if (roundsToWin > 1) {
+                roundsToWin--
+                roundsValueTv?.text = roundsToWin.toString()
+            }
+        }
+
+        view.findViewById<TextView>(R.id.btn_rounds_inc)?.setOnClickListener {
+            if (roundsToWin < 9) {
+                roundsToWin++
+                roundsValueTv?.text = roundsToWin.toString()
+            }
+        }
+
         // ── Win Battle button (ARM WIN mode) ─────────────────────────────
         // ARM WIN is the correct MITM approach: instead of injecting mid-fight
         // (which the game client ignores — it's busy playing and not waiting for a
@@ -303,9 +329,9 @@ class OverlayService : Service() {
                 vpnInstance.disarmIntercept()
                 updateEventsPanel()
             } else {
-                // First press → arm the intercept
+                // First press → arm the intercept with the configured rounds value
                 interceptIsArmed = true
-                vpnInstance.armIntercept()
+                vpnInstance.armIntercept(roundsToWin)
                 updateEventsPanel()
             }
         }

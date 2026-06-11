@@ -195,6 +195,61 @@
             android:layout_marginBottom="20dp"
             android:visibility="gone" />
 
+        <!-- ── Rounds row ── -->
+        <LinearLayout
+            android:id="@+id/row_rounds"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginBottom="8dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="ROUNDS  "
+                android:textColor="#FF8B949E"
+                android:textSize="11sp"
+                android:fontFamily="monospace" />
+
+            <TextView
+                android:id="@+id/btn_rounds_dec"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:text="◀"
+                android:textColor="#FFE6EDF3"
+                android:textSize="14sp"
+                android:gravity="center"
+                android:background="#FF21262D"
+                android:clickable="true"
+                android:focusable="true" />
+
+            <TextView
+                android:id="@+id/tv_rounds_value"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:text="3"
+                android:textColor="#FF58A6FF"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:gravity="center" />
+
+            <TextView
+                android:id="@+id/btn_rounds_inc"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:text="▶"
+                android:textColor="#FFE6EDF3"
+                android:textSize="14sp"
+                android:gravity="center"
+                android:background="#FF21262D"
+                android:clickable="true"
+                android:focusable="true" />
+
+        </LinearLayout>
+
         <TextView
             android:id="@+id/btn_win_battle"
             android:layout_width="match_parent"

@@ -55,16 +55,17 @@ object PacketInjector {
      * the minimum edits required for the server to accept it as a WIN:
      *
      *   1. Flips params.field[4] from 3 (LOSS) → 1 (WIN) in-place.
-     *   2. Appends params.field[5] = field[7] (wonRounds = totalRounds) if absent.
+     *   2. Fixes params.field[7] (totalRounds) in-place to [roundsToWin].
+     *   3. Appends params.field[5] = [roundsToWin] (wonRounds) if absent.
      *      The server validates "check result and wonRounds" — result=WIN without
-     *      wonRounds gets an IllegalArgumentException.
+     *      wonRounds (or with wonRounds ≠ totalRounds) gets an IllegalArgumentException.
      *
      * All other bytes — battleId, counter, seed, items, stats, level — are
      * preserved exactly as the game sent them.
      *
      * Returns the patched packet on success, or null if parsing fails (caller logs and drops).
      */
-    fun patchFinishFightToWin(data: ByteArray): ByteArray? {
+    fun patchFinishFightToWin(data: ByteArray, roundsToWin: Int = 3): ByteArray? {
         if (data.size < 3 || (data[0].toInt() and 0xFF) != 0x01) return null
         val frameLen = data[1].toInt() and 0xFF
         val protoEnd = 2 + frameLen
@@ -96,9 +97,10 @@ object PacketInjector {
                     val paramsStart = pos
                     val paramsEnd   = pos + len
 
-                    // First pass: collect field[4] value-byte position, field[7] value, field[5] presence
+                    // First pass: collect positions and values for field[4], field[5], field[7]
                     var field4ValPos   = -1
-                    var field7Val      = 1L   // totalRounds — default 1 if not found
+                    var field5ValPos   = -1
+                    var field7ValPos   = -1
                     var field5Present  = false
                     var pp = paramsStart
                     while (pp < paramsEnd) {
@@ -114,8 +116,8 @@ object PacketInjector {
                                 v = v or ((data[pp].toLong() and 0x7F) shl vs); pp++
                                 when (pf) {
                                     4 -> field4ValPos = vPos
-                                    5 -> field5Present = true
-                                    7 -> field7Val = v
+                                    5 -> { field5Present = true; field5ValPos = vPos }
+                                    7 -> field7ValPos = vPos
                                 }
                             }
                             2 -> {
@@ -133,22 +135,30 @@ object PacketInjector {
 
                     if (field4ValPos < 0) return null  // field[4] not found in params
 
+                    val rVal = (roundsToWin and 0x7F).toByte()
+
                     return if (field5Present) {
-                        // field[5] already there — just flip field[4]
-                        data.copyOf().also { it[field4ValPos] = 0x01 }
+                        // field[5] already present — fix field[4], field[5], and field[7] in-place.
+                        data.copyOf().also { copy ->
+                            copy[field4ValPos] = 0x01
+                            if (field5ValPos >= 0) copy[field5ValPos] = rVal
+                            if (field7ValPos >= 0) copy[field7ValPos] = rVal
+                        }
                     } else {
-                        // Append field[5] = field[7] after existing params.
+                        // Append field[5] = roundsToWin after existing params;
+                        // also fix field[7] (totalRounds) in-place to roundsToWin.
                         // field[5] tag = (5 shl 3) or 0 = 0x28
-                        // field[7] is always 1–3, single-byte varint.
+                        // Round values are always 1–3, so single-byte varint is safe.
                         // params is always the last envelope field, so appending to the
                         // packet is safe — nothing follows params in the SF3 envelope.
-                        val extra = byteArrayOf(0x28, (field7Val and 0x7F).toByte())
+                        val extra = byteArrayOf(0x28, rVal)
                         val result = ByteArray(data.size + extra.size)
                         data.copyInto(result)
-                        result[field4ValPos]      = 0x01                           // flip result to WIN
-                        result[1]                 = (frameLen + extra.size).toByte() // extend frame length
-                        result[paramsLenBytePos]  = (len + extra.size).toByte()      // extend params length
-                        extra.copyInto(result, protoEnd)                           // append field[5]
+                        result[field4ValPos]     = 0x01                             // flip result → WIN
+                        if (field7ValPos >= 0) result[field7ValPos] = rVal          // fix totalRounds
+                        result[1]                = (frameLen + extra.size).toByte() // extend frame length
+                        result[paramsLenBytePos] = (len + extra.size).toByte()      // extend params length
+                        extra.copyInto(result, protoEnd)                            // append field[5]
                         result
                     }
                 }

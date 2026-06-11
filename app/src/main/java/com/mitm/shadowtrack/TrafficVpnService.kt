@@ -212,8 +212,8 @@ class TrafficVpnService : VpnService() {
      * (same counter, same connection) so the server responds on the connection the
      * game is already waiting on, causing the game to display the WIN screen.
      */
-    fun armIntercept() {
-        tcpHandler?.armIntercept()
+    fun armIntercept(roundsToWin: Int = 3) {
+        tcpHandler?.armIntercept(roundsToWin)
     }
 
     /** Cancel a previously armed intercept without firing it. */
