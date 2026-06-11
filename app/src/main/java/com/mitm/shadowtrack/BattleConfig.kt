@@ -1,5 +1,7 @@
 package com.mitm.shadowtrack
 
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -41,8 +43,11 @@ object BattleConfig {
      * Kicks off a background fetch of the battles table.
      * Safe to call multiple times — a fresh fetch replaces the previous data.
      * Must NOT be called on the main thread (it does network I/O).
+     *
+     * [onLoaded] is called on the main thread after a successful fetch so that
+     * any UI (e.g. OverlayService) can re-query rounds for the active battle.
      */
-    fun fetchAsync() {
+    fun fetchAsync(onLoaded: (() -> Unit)? = null) {
         Thread {
             try {
                 Log.d("BattleConfig", "Fetching battle data from $DATA_URL")
@@ -66,6 +71,8 @@ object BattleConfig {
                 loadedVersion = version
                 isLoaded = true
                 Log.d("BattleConfig", "Loaded ${map.size} battles  version=$version")
+
+                onLoaded?.let { Handler(Looper.getMainLooper()).post(it) }
             } catch (e: Exception) {
                 Log.w("BattleConfig", "Failed to load battle data: ${e.message}")
             }

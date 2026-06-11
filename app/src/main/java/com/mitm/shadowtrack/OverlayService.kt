@@ -218,7 +218,13 @@ class OverlayService : Service() {
         AppState.viewModel.currentBattle.observeForever(battleObserver)
         // Kick off background download of battle → rounds table.
         // Runs on a daemon thread; failures are silently swallowed.
-        BattleConfig.fetchAsync()
+        // onLoaded resets autoSetBattleId so the active battle re-queries
+        // rounds now that the table is populated (fixes race where the battle
+        // started before the download finished, leaving rounds stuck at 3).
+        BattleConfig.fetchAsync(onLoaded = {
+            autoSetBattleId = null
+            updateEventsPanel()
+        })
     }
 
     // ── WindowManager params ──────────────────────────────────────────────
