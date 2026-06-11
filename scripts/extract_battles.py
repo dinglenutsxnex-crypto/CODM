@@ -182,36 +182,160 @@ def _extract_entry(buf: bytes, entry) -> bytes:
 
 
 # ── Battle parser ─────────────────────────────────────────────────────────────
+#
+# Three complementary strategies cover all known SF3 battle definition patterns:
+#
+# Strategy 1 – Direct scan (all scripts/features/ + scripts/z_utils/ JS files)
+#   • Long window (2000 chars): ID → DefaultTemplate → RoundsToWin
+#     Covers: event battles, chapter missions, adventure, raid, etc.
+#   • Short window (500 chars): ID → RoundsToWin (no template required)
+#     Covers: faction-war constructor patterns (new SideBattleArchetype)
+#
+# Strategy 2 – Cross-file skin intro_battles
+#   • *_intro_battles.js defines intro_KEY → RoundsToWin (per narrative battle)
+#   • Companion *_skin.js maps intro_KEY → literal battle ID
+#   • Join on key name to produce (ID, rounds) pairs
+#   Covers: frost_skin, circus_skin, ling_skin, etc.
+#
+# Strategy 3 – __assign chain resolution
+#   • Find var BASE = {..., RoundsToWin: N} definitions across the file
+#   • For PROP: __assign({...}, BASE), build PROP → rounds (1-level)
+#   • For __assign({ID: N, ...}, TEMPLATE.PROP), resolve 2-level chain
+#   Covers: summer_fest and other template-spread event battles
 
-def _parse_battles_from_js(text: str) -> list:
+
+def _parse_direct(text: str) -> list:
     results = []
     id_re = re.compile(r'\bID\s*:\s*(\d{5,})')
     for m in id_re.finditer(text):
-        battle_id = int(m.group(1))
-        ctx = text[m.start():min(len(text), m.start()+1500)]
-        template_m = re.search(r'DefaultTemplate\s*:\s*(BattleEventDefault\.\w+)', ctx)
-        if template_m is None:
+        bid = int(m.group(1))
+        # Long window: require DefaultTemplate to filter hub/locker non-combat battles
+        ctx = text[m.start():min(len(text), m.start() + 2000)]
+        if re.search(r'DefaultTemplate\s*:', ctx):
+            rm = re.search(r'RoundsToWin\s*:\s*(\d+)', ctx)
+            results.append((bid, int(rm.group(1)) if rm else 3))
             continue
-        rounds_m = re.search(r'RoundsToWin\s*:\s*(\d+)', ctx)
-        rounds = int(rounds_m.group(1)) if rounds_m else 3
-        results.append((battle_id, rounds))
+        # Short window: ID and RoundsToWin must be very close (constructor patterns)
+        ctx_short = text[m.start():min(len(text), m.start() + 500)]
+        rm = re.search(r'RoundsToWin\s*:\s*(\d+)', ctx_short)
+        if rm:
+            results.append((bid, int(rm.group(1))))
     return results
+
+
+def _parse_skin_intro(skin_text: str, intro_text: str) -> list:
+    # From intro_battles file: intro_KEY -> rounds (3000-char forward window)
+    key_rounds = {}
+    for m in re.finditer(r'(intro_\w+)\s*:', intro_text):
+        key = m.group(1)
+        if key in key_rounds:
+            continue
+        snippet = intro_text[m.start():m.start() + 3000]
+        rm = re.search(r'RoundsToWin\s*:\s*(\d+)', snippet)
+        if rm:
+            key_rounds[key] = int(rm.group(1))
+    # From skin file: intro_KEY -> literal battle ID
+    key_id = {}
+    for m in re.finditer(
+            r'(intro_\w+)\s*:\s*prepareArchBattle\s*\([^{]+\{[^}]*ID\s*:\s*(\d{5,})',
+            skin_text):
+        key = m.group(1)
+        if key not in key_id:
+            key_id[key] = int(m.group(2))
+    return [(key_id[k], r) for k, r in key_rounds.items() if k in key_id]
+
+
+def _parse_assign_chain(text: str) -> list:
+    # Build direct var -> rounds map (first 3000 chars of each var definition)
+    var_rounds = {}
+    for vm in re.finditer(r'\bvar\s+(\w+)\s*=', text):
+        varname = vm.group(1)
+        snippet = text[vm.start():min(len(text), vm.start() + 3000)]
+        rm = re.search(r'RoundsToWin\s*:\s*(\d+)', snippet)
+        if rm:
+            var_rounds[varname] = int(rm.group(1))
+
+    # Build 1-level property map: PROP -> rounds (for TEMPLATE.PROP lookups)
+    prop_rounds = {}
+    for m in re.finditer(r'(\w+)\s*:\s*__assign\s*\(', text):
+        prop = m.group(1)
+        snippet = text[m.start():min(len(text), m.start() + 5000)]
+        tail = re.search(r'\},\s*([\w.]+)\s*\)', snippet)
+        if tail:
+            base_root = tail.group(1).split('.')[0]
+            if base_root in var_rounds:
+                prop_rounds[prop] = var_rounds[base_root]
+
+    results = []
+    id_re = re.compile(r'\bID\s*:\s*(\d{5,})')
+    for m in id_re.finditer(text):
+        bid = int(m.group(1))
+        fwd = text[m.start():min(len(text), m.start() + 1000)]
+        tail = re.search(r'\},\s*([\w.]+)\s*\)', fwd)
+        if not tail:
+            continue
+        chain = tail.group(1)
+        parts = chain.split('.')
+        root, prop = parts[0], parts[1] if len(parts) > 1 else None
+        if root in var_rounds:
+            results.append((bid, var_rounds[root]))
+        elif prop and prop in prop_rounds:
+            results.append((bid, prop_rounds[prop]))
+    return results
+
 
 def parse_all_battles(config_zip_bytes: bytes) -> dict:
     """Returns {battle_id_str: rounds_int} from the decrypted inner config ZIP."""
     entries = _zip_entries(config_zip_bytes)
-    js_files = [e for e in entries
-                if e[0].startswith('scripts/features/events') and e[0].endswith('.js')]
-    print(f"    Found {len(js_files)} event JS files")
+    all_js = [e for e in entries if e[0].endswith('.js')
+              and (e[0].startswith('scripts/features/')
+                   or e[0].startswith('scripts/z_utils/'))]
+    print(f"    Scanning {len(all_js)} JS files across features + z_utils")
+
     seen = {}
-    for ef in js_files:
+
+    # ── Strategy 2: cross-file skin intro_battles (highest priority) ────────────
+    skin_dirs = {}
+    for e in all_js:
+        name = e[0]
+        if 'templates/skins/' not in name:
+            continue
+        parts = name.split('/')
+        dir_key = '/'.join(parts[:-1])
+        fname = parts[-1]
+        if dir_key not in skin_dirs:
+            skin_dirs[dir_key] = {}
+        if fname.endswith('_skin.js'):
+            skin_dirs[dir_key]['skin'] = e
+        elif fname.endswith('_intro_battles.js'):
+            skin_dirs[dir_key]['intro'] = e
+
+    for dir_key, fmap in skin_dirs.items():
+        if 'skin' not in fmap or 'intro' not in fmap:
+            continue
+        try:
+            skin_text  = _extract_entry(config_zip_bytes, fmap['skin']).decode('utf-8', errors='replace')
+            intro_text = _extract_entry(config_zip_bytes, fmap['intro']).decode('utf-8', errors='replace')
+            for bid, rnd in _parse_skin_intro(skin_text, intro_text):
+                if bid not in seen:
+                    seen[bid] = rnd
+        except Exception as ex:
+            print(f"    [!] skin_intro error in {dir_key}: {ex}")
+
+    # ── Strategies 1 + 3: scan every feature/util JS file ───────────────────────
+    for ef in all_js:
         try:
             text = _extract_entry(config_zip_bytes, ef).decode('utf-8', errors='replace')
-            for battle_id, rounds in _parse_battles_from_js(text):
-                if battle_id not in seen:
-                    seen[battle_id] = rounds
-        except Exception as e:
-            print(f"    [!] Error parsing {ef[0]}: {e}")
+            for bid, rnd in _parse_direct(text):
+                if bid not in seen:
+                    seen[bid] = rnd
+            for bid, rnd in _parse_assign_chain(text):
+                if bid not in seen:
+                    seen[bid] = rnd
+        except Exception as ex:
+            print(f"    [!] Error parsing {ef[0]}: {ex}")
+
+    print(f"    Found {len(seen)} battle entries")
     return {str(k): v for k, v in sorted(seen.items())}
 
 
