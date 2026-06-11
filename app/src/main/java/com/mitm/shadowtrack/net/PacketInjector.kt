@@ -1,6 +1,5 @@
 package com.mitm.shadowtrack.net
 
-import com.mitm.shadowtrack.BattleDataCache
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -97,16 +96,10 @@ object PacketInjector {
                     val paramsStart = pos
                     val paramsEnd   = pos + len
 
-                    // First pass: collect field positions and values needed for patching.
-                    //   field[1] = battleId  → used to look up maxRounds from BattleDataCache
-                    //   field[4] = result    → must flip to 0x01 (WIN)
-                    //   field[5] = wonRounds → absent in loss packet; must be appended = maxRounds
-                    //   field[7] = totalRounds → game sends 1 on early exit; must equal maxRounds
-                    var field1Val      = 0L   // battleId
+                    // First pass: collect field[4] value-byte position, field[7] value, field[5] presence
                     var field4ValPos   = -1
+                    var field7Val      = 1L   // totalRounds — default 1 if not found
                     var field5Present  = false
-                    var field7Val      = 1L   // totalRounds from packet (often 1 on loss)
-                    var field7ValPos   = -1
                     var pp = paramsStart
                     while (pp < paramsEnd) {
                         val ptag = data[pp].toInt() and 0xFF; pp++
@@ -120,10 +113,9 @@ object PacketInjector {
                                 }
                                 v = v or ((data[pp].toLong() and 0x7F) shl vs); pp++
                                 when (pf) {
-                                    1 -> field1Val    = v
                                     4 -> field4ValPos = vPos
                                     5 -> field5Present = true
-                                    7 -> { field7Val = v; field7ValPos = vPos }
+                                    7 -> field7Val = v
                                 }
                             }
                             2 -> {
@@ -141,40 +133,22 @@ object PacketInjector {
 
                     if (field4ValPos < 0) return null  // field[4] not found in params
 
-                    // Determine effective rounds.
-                    // Priority: BattleDataCache (from Nekki config) > game's field[7].
-                    // A WIN requires wonRounds == totalRounds == maxRounds for that battle.
-                    // The game sends field[7]=1 on early exit — that is NOT maxRounds.
-                    val cached = BattleDataCache.getRounds(field1Val).toLong()
-                    val effectiveRounds = if (cached > 0L) cached else field7Val
-
-                    // Patch helper: overwrite field[7] in-place if effectiveRounds differs.
-                    // Both values are small (1–10), always single-byte varints → safe in-place.
-                    fun patchField7(out: ByteArray) {
-                        if (field7ValPos >= 0 && effectiveRounds != field7Val
-                            && effectiveRounds in 1L..127L) {
-                            out[field7ValPos] = effectiveRounds.toByte()
-                        }
-                    }
-
                     return if (field5Present) {
-                        // field[5] already present — flip field[4] and fix field[7] in-place.
-                        data.copyOf().also { out ->
-                            out[field4ValPos] = 0x01
-                            patchField7(out)
-                        }
+                        // field[5] already there — just flip field[4]
+                        data.copyOf().also { it[field4ValPos] = 0x01 }
                     } else {
-                        // Append field[5] = effectiveRounds after params.
-                        // field[5] tag = (5 shl 3) or 0 = 0x28, value is single-byte varint.
-                        // params is always the last envelope field → appending is safe.
-                        val extra = byteArrayOf(0x28, (effectiveRounds and 0x7F).toByte())
+                        // Append field[5] = field[7] after existing params.
+                        // field[5] tag = (5 shl 3) or 0 = 0x28
+                        // field[7] is always 1–3, single-byte varint.
+                        // params is always the last envelope field, so appending to the
+                        // packet is safe — nothing follows params in the SF3 envelope.
+                        val extra = byteArrayOf(0x28, (field7Val and 0x7F).toByte())
                         val result = ByteArray(data.size + extra.size)
                         data.copyInto(result)
-                        result[field4ValPos]     = 0x01                              // WIN
-                        result[1]                = (frameLen + extra.size).toByte()  // extend frame len
-                        result[paramsLenBytePos] = (len + extra.size).toByte()       // extend params len
-                        patchField7(result)                                          // fix totalRounds
-                        extra.copyInto(result, protoEnd)                             // append wonRounds
+                        result[field4ValPos]      = 0x01                           // flip result to WIN
+                        result[1]                 = (frameLen + extra.size).toByte() // extend frame length
+                        result[paramsLenBytePos]  = (len + extra.size).toByte()      // extend params length
+                        extra.copyInto(result, protoEnd)                           // append field[5]
                         result
                     }
                 }
