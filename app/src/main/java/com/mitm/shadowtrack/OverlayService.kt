@@ -8,6 +8,7 @@ import android.os.IBinder
 import android.util.TypedValue
 import android.view.*
 import android.widget.TextView
+import android.widget.Toast
 import androidx.lifecycle.Observer
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -151,9 +152,12 @@ class OverlayService : Service() {
                             ?.text = roundsToWin.toString()
                         labelTv?.text = "max rounds  "
                         labelTv?.setTextColor(Color.parseColor("#FF58A6FF"))
+                        Toast.makeText(this, "Rounds auto-set: $autoRounds for $id", Toast.LENGTH_SHORT).show()
                     } else {
                         labelTv?.text = "ROUNDS  "
                         labelTv?.setTextColor(Color.parseColor("#FF8B949E"))
+                        val loaded = BattleConfig.isLoaded
+                        Toast.makeText(this, "No rounds for $id (config loaded=$loaded)", Toast.LENGTH_LONG).show()
                     }
                 }
 
@@ -217,14 +221,25 @@ class OverlayService : Service() {
         AppState.viewModel.gameEvents.observeForever(winObserver)
         AppState.viewModel.currentBattle.observeForever(battleObserver)
         // Kick off background download of battle → rounds table.
-        // Runs on a daemon thread; failures are silently swallowed.
-        // onLoaded resets autoSetBattleId so the active battle re-queries
-        // rounds now that the table is populated (fixes race where the battle
-        // started before the download finished, leaving rounds stuck at 3).
-        BattleConfig.fetchAsync(onLoaded = {
-            autoSetBattleId = null
-            updateEventsPanel()
-        })
+        BattleConfig.fetchAsync(
+            onLoaded = { count, version ->
+                Toast.makeText(
+                    this,
+                    "BattleConfig OK: $count battles (v$version)",
+                    Toast.LENGTH_LONG
+                ).show()
+                // Reset so the active battle re-queries with the now-populated table.
+                autoSetBattleId = null
+                updateEventsPanel()
+            },
+            onError = { msg ->
+                Toast.makeText(
+                    this,
+                    "BattleConfig FAILED: $msg",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        )
     }
 
     // ── WindowManager params ──────────────────────────────────────────────
