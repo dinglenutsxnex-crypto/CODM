@@ -2,11 +2,13 @@ package com.mitm.shadowtrack
 
 import android.app.Service
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.IBinder
 import android.util.TypedValue
 import android.view.*
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.lifecycle.Observer
@@ -19,7 +21,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class OverlayService : Service() {
 
@@ -41,42 +42,42 @@ class OverlayService : Service() {
     private var currentBattleId: String? = null
     private var lastWinConfirmedId: String? = null
 
-    // True while the ARM-WIN intercept is set in TcpHandler.
-    // The next outbound finish_fight from the game will be replaced with a WIN packet.
     private var interceptIsArmed = false
-
-    // True while the ARM MAX DMG raid intercept is set in TcpHandler.
-    // The next outbound raid_fight_finish will have its damage ratio patched to 1.0.
     private var raidInterceptArmed = false
 
-    // Number of rounds to report in the WIN patch (field[5] wonRounds = field[7] totalRounds).
-    // Range 1–9. Default 3 (standard Shadow Fight 3 battle).
     private var roundsToWin: Int = 3
-
-    // Last battle ID for which we ran the BattleConfig auto-lookup, so we
-    // don't overwrite a user-adjusted value on every panel refresh.
     private var autoSetBattleId: String? = null
 
-    // Background scope for IO work (e.g. injectDirect) that must not run on main thread.
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Index into the ViewModel's gameEventList — how many items from that list we've
-    // already added to our local `events`.  The ViewModel uses a rolling 2000-item cap;
-    // we track by index within the CURRENT snapshot rather than by absolute count so
-    // we never lose events when the ViewModel drops old ones from the front.
     private var vmEventsCursor = 0
+
+    // ── Mode & user-mode toggle state ──────────────────────────────────────
+    private var isUserMode = false
+
+    // Which type of battle is currently active (used to color user-mode labels)
+    private enum class BattleType { NONE, EVENT, CLAN }
+    private var activeBattleType = BattleType.NONE
+
+    // Whether each user-mode toggle is switched on
+    private var userEventBattleEnabled = false
+    private var userClanBattleEnabled  = false
+    private var userRaidEnabled        = false
+
+    // Normal label color for user-mode toggles
+    private val labelColorNormal = Color.parseColor("#FFE6EDF3")
+    // Red when a battle is active for that slot
+    private val labelColorActive = Color.parseColor("#FFFF4444")
+
+    // Switch track/thumb color states
+    private val switchOnColor  = Color.parseColor("#FF3FB950")
+    private val switchOffColor = Color.parseColor("#FF444C56")
+    private val thumbOnColor   = Color.WHITE
+    private val thumbOffColor  = Color.parseColor("#FF8B949E")
 
     // ── Event log observer ────────────────────────────────────────────────
 
     private val eventObserver = Observer<List<GameEvent>> { newList ->
-        // The ViewModel maintains a rolling window (up to 2000 items). Our local `events`
-        // list grows without bound (cleared by the Clear button).  We must correctly
-        // identify which items in `newList` are new since our last update.
-        //
-        // Strategy: `vmEventsCursor` is how many items from `newList` we've already
-        // consumed.  When the ViewModel hasn't rolled over yet, vmEventsCursor == events.size
-        // (they grow together).  After a roll-over the ViewModel drops old events off the
-        // front, so newList.size < vmEventsCursor — in that case all remaining items are new.
         val added = if (vmEventsCursor < newList.size) newList.drop(vmEventsCursor) else emptyList()
         vmEventsCursor = newList.size
 
@@ -90,10 +91,14 @@ class OverlayService : Service() {
                 rv.scrollToPosition(events.size - 1)
             }
 
-            overlayView?.findViewById<TextView>(R.id.tv_event_count)?.text = events.size.toString()
-            overlayView?.findViewById<TextView>(R.id.tv_status_bar)?.text =
-                "${events.size} events  ·  last: ${events.last().timeStr}"
-            miniView?.findViewById<TextView>(R.id.tv_mini_count)?.text = "${events.size}"
+            if (!isUserMode) {
+                overlayView?.findViewById<TextView>(R.id.tv_event_count)?.text = events.size.toString()
+                overlayView?.findViewById<TextView>(R.id.tv_status_bar)?.text =
+                    "${events.size} events  ·  last: ${events.last().timeStr}"
+            }
+            miniView?.findViewById<TextView>(R.id.tv_mini_count)?.apply {
+                if (!isUserMode) text = "${events.size}"
+            }
         }
     }
 
@@ -105,9 +110,6 @@ class OverlayService : Service() {
     }
 
     // ── Clan rounds observer ───────────────────────────────────────────────
-    // Fires when the ViewModel successfully extracts rounds from the server's
-    // inbound clan_start_fight response. Updates roundsToWin so ARM WIN (and
-    // the clan auto-intercept) both use the server-specified value.
     private val clanRoundsObserver = Observer<Int?> { rounds ->
         if (rounds == null) return@Observer
         roundsToWin = rounds
@@ -118,16 +120,166 @@ class OverlayService : Service() {
                 label.setTextColor(Color.parseColor("#FF58A6FF"))
             }
         }
-        // Mark autoSetBattleId so updateEventsPanel() doesn't overwrite with null lookup.
         autoSetBattleId = currentBattleId
         Toast.makeText(this, "Clan rounds auto-detected: $rounds", Toast.LENGTH_SHORT).show()
     }
 
     // ── Raid fight observer ────────────────────────────────────────────────
-    // Fires when ViewModel detects outbound raid_fight_start (active=true) or
-    // inbound raid_fight_finish server ACK (active=false).
     private val raidFightObserver = Observer<Boolean> { active ->
         updateRaidPanel(active)
+        if (isUserMode) updateUserModeRaidLabel(active)
+    }
+
+    // ── Game events observer (used to detect battle type for user-mode labels) ──
+    private val gameEventsForTypeObserver = Observer<List<GameEvent>> { list ->
+        val last = list.lastOrNull()
+        when (last) {
+            is GameEvent.BattleStarted -> {
+                activeBattleType = if (last.commandName == "event_battle_start_fight")
+                    BattleType.EVENT else BattleType.CLAN
+                if (isUserMode) updateUserModeBattleLabels()
+                // Auto-arm if matching toggle is on
+                if (activeBattleType == BattleType.EVENT && userEventBattleEnabled && !interceptIsArmed) {
+                    interceptIsArmed = true
+                    TrafficVpnService.instance?.armIntercept(roundsToWin)
+                } else if (activeBattleType == BattleType.CLAN && userClanBattleEnabled && !interceptIsArmed) {
+                    interceptIsArmed = true
+                    TrafficVpnService.instance?.armIntercept(roundsToWin)
+                }
+            }
+            is GameEvent.WinConfirmed -> {
+                activeBattleType = BattleType.NONE
+                interceptIsArmed = false
+                if (isUserMode) updateUserModeBattleLabels()
+            }
+            is GameEvent.BattleCommand -> {
+                if (last.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")) {
+                    activeBattleType = BattleType.NONE
+                    interceptIsArmed = false
+                    if (isUserMode) updateUserModeBattleLabels()
+                }
+            }
+            else -> {}
+        }
+    }
+
+    // ── Win confirmation observer ─────────────────────────────────────────
+    private val winObserver = Observer<List<GameEvent>> { list ->
+        val last = list.lastOrNull()
+        if (last is GameEvent.WinConfirmed) {
+            lastWinConfirmedId = last.battleId
+            updateEventsPanel()
+        }
+    }
+
+    private fun isAtBottom(rv: RecyclerView): Boolean {
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return true
+        val last = lm.findLastVisibleItemPosition()
+        return last >= adapter.itemCount - 2
+    }
+
+    // ── User mode label helpers ────────────────────────────────────────────
+
+    private fun updateUserModeBattleLabels() {
+        val v = overlayView ?: return
+        val tvEvent = v.findViewById<TextView>(R.id.tv_label_event_battle) ?: return
+        val tvClan  = v.findViewById<TextView>(R.id.tv_label_clan_battle)  ?: return
+        tvEvent.setTextColor(if (activeBattleType == BattleType.EVENT) labelColorActive else labelColorNormal)
+        tvClan.setTextColor(if (activeBattleType == BattleType.CLAN)  labelColorActive else labelColorNormal)
+    }
+
+    private fun updateUserModeRaidLabel(raidActive: Boolean) {
+        val v = overlayView ?: return
+        val tvRaid = v.findViewById<TextView>(R.id.tv_label_raid) ?: return
+        tvRaid.setTextColor(if (raidActive) labelColorActive else labelColorNormal)
+    }
+
+    // ── Switch styling helper ──────────────────────────────────────────────
+    @Suppress("DEPRECATION")
+    private fun styleSwitch(sw: Switch) {
+        val states = arrayOf(
+            intArrayOf(android.R.attr.state_checked),
+            intArrayOf(-android.R.attr.state_checked)
+        )
+        sw.trackTintList = ColorStateList(states, intArrayOf(switchOnColor, switchOffColor))
+        sw.thumbTintList = ColorStateList(states, intArrayOf(thumbOnColor, thumbOffColor))
+    }
+
+    // ── Events panel sync ──────────────────────────────────────────────────
+
+    private fun updateEventsPanel() {
+        val v = overlayView ?: return
+        val statusTv  = v.findViewById<TextView>(R.id.tv_battle_status) ?: return
+        val idTv      = v.findViewById<TextView>(R.id.tv_battle_id)     ?: return
+        val winBtn    = v.findViewById<TextView>(R.id.btn_win_battle)   ?: return
+        val winStatus = v.findViewById<TextView>(R.id.tv_win_status)    ?: return
+        val rowRounds = v.findViewById<View>(R.id.row_rounds)
+
+        val id = currentBattleId
+        when {
+            id != null -> {
+                statusTv.text = "BATTLE ACTIVE"
+                statusTv.setTextColor(Color.parseColor("#FF3FB950"))
+                idTv.text = "battle_id: $id"
+                idTv.visibility = View.VISIBLE
+                winBtn.visibility = View.VISIBLE
+                rowRounds?.visibility = View.VISIBLE
+                lastWinConfirmedId = null
+
+                if (id != autoSetBattleId) {
+                    autoSetBattleId = id
+                    val autoRounds = BattleConfig.roundsFor(id)
+                    val labelTv = v.findViewById<android.widget.TextView>(R.id.tv_rounds_label)
+                    if (autoRounds != null) {
+                        roundsToWin = autoRounds
+                        overlayView?.findViewById<android.widget.TextView>(R.id.tv_rounds_value)
+                            ?.text = roundsToWin.toString()
+                        labelTv?.text = "max rounds  "
+                        labelTv?.setTextColor(Color.parseColor("#FF58A6FF"))
+                        Toast.makeText(this, "Rounds auto-set: $autoRounds for $id", Toast.LENGTH_SHORT).show()
+                    } else {
+                        labelTv?.text = "ROUNDS  "
+                        labelTv?.setTextColor(Color.parseColor("#FF8B949E"))
+                        val loaded = BattleConfig.isLoaded
+                        Toast.makeText(this, "No rounds for $id (config loaded=$loaded)", Toast.LENGTH_LONG).show()
+                    }
+                }
+
+                if (interceptIsArmed) {
+                    winBtn.text = "⚡ ARMED — play to fight end"
+                    winBtn.setTextColor(Color.parseColor("#FF0D1117"))
+                    winBtn.setBackgroundColor(Color.parseColor("#FFD29922"))
+                    winStatus.text = "finish_fight will be replaced with WIN"
+                    winStatus.setTextColor(Color.parseColor("#FFD29922"))
+                    winStatus.visibility = View.VISIBLE
+                } else {
+                    winBtn.text = "ARM WIN"
+                    winBtn.setTextColor(Color.parseColor("#FF0D1117"))
+                    winBtn.setBackgroundColor(Color.parseColor("#FF3FB950"))
+                    winStatus.visibility = View.GONE
+                }
+            }
+            lastWinConfirmedId != null -> {
+                interceptIsArmed = false
+                statusTv.text = "WIN CONFIRMED"
+                statusTv.setTextColor(Color.parseColor("#FF3FB950"))
+                idTv.text = "battle_id: $lastWinConfirmedId  /  server ACK"
+                idTv.visibility = View.VISIBLE
+                winBtn.visibility = View.GONE
+                rowRounds?.visibility = View.GONE
+            }
+            else -> {
+                if (interceptIsArmed) {
+                    interceptIsArmed = false
+                    TrafficVpnService.instance?.disarmIntercept()
+                }
+                statusTv.text = "NO ACTIVE BATTLE"
+                statusTv.setTextColor(Color.parseColor("#FF8B949E"))
+                idTv.visibility = View.GONE
+                winBtn.visibility = View.GONE
+                rowRounds?.visibility = View.GONE
+            }
+        }
     }
 
     private fun updateRaidPanel(active: Boolean) {
@@ -167,109 +319,6 @@ class OverlayService : Service() {
         }
     }
 
-    // ── Win confirmation observer (via event stream) ──────────────────────
-
-    private val winObserver = Observer<List<GameEvent>> { list ->
-        val last = list.lastOrNull()
-        if (last is GameEvent.WinConfirmed) {
-            lastWinConfirmedId = last.battleId
-            updateEventsPanel()
-        }
-    }
-
-    private fun isAtBottom(rv: RecyclerView): Boolean {
-        val lm = rv.layoutManager as? LinearLayoutManager ?: return true
-        val last = lm.findLastVisibleItemPosition()
-        return last >= adapter.itemCount - 2
-    }
-
-    // ── Events panel sync ──────────────────────────────────────────────────
-
-    private fun updateEventsPanel() {
-        val v = overlayView ?: return
-        val statusTv  = v.findViewById<TextView>(R.id.tv_battle_status) ?: return
-        val idTv      = v.findViewById<TextView>(R.id.tv_battle_id)     ?: return
-        val winBtn    = v.findViewById<TextView>(R.id.btn_win_battle)   ?: return
-        val winStatus = v.findViewById<TextView>(R.id.tv_win_status)    ?: return
-        val rowRounds = v.findViewById<View>(R.id.row_rounds)
-
-        val id = currentBattleId
-        when {
-            id != null -> {
-                // Active battle — show ARM WIN button and rounds row.
-                // This is the ONLY branch that resets winStatus — a new battle starting
-                // means any previous result is stale.
-                statusTv.text = "BATTLE ACTIVE"
-                statusTv.setTextColor(Color.parseColor("#FF3FB950"))
-                idTv.text = "battle_id: $id"
-                idTv.visibility = View.VISIBLE
-                winBtn.visibility = View.VISIBLE
-                rowRounds?.visibility = View.VISIBLE
-                lastWinConfirmedId = null
-
-                // Auto-detect rounds from the downloaded config table.
-                // Only runs once per unique battle ID so a user-adjusted value is preserved.
-                if (id != autoSetBattleId) {
-                    autoSetBattleId = id
-                    val autoRounds = BattleConfig.roundsFor(id)
-                    val labelTv = v.findViewById<android.widget.TextView>(R.id.tv_rounds_label)
-                    if (autoRounds != null) {
-                        roundsToWin = autoRounds
-                        overlayView?.findViewById<android.widget.TextView>(R.id.tv_rounds_value)
-                            ?.text = roundsToWin.toString()
-                        labelTv?.text = "max rounds  "
-                        labelTv?.setTextColor(Color.parseColor("#FF58A6FF"))
-                        Toast.makeText(this, "Rounds auto-set: $autoRounds for $id", Toast.LENGTH_SHORT).show()
-                    } else {
-                        labelTv?.text = "ROUNDS  "
-                        labelTv?.setTextColor(Color.parseColor("#FF8B949E"))
-                        val loaded = BattleConfig.isLoaded
-                        Toast.makeText(this, "No rounds for $id (config loaded=$loaded)", Toast.LENGTH_LONG).show()
-                    }
-                }
-
-                if (interceptIsArmed) {
-                    // Intercept is set — button shows armed state, status shows hint.
-                    winBtn.text = "⚡ ARMED — play to fight end"
-                    winBtn.setTextColor(Color.parseColor("#FF0D1117"))
-                    winBtn.setBackgroundColor(Color.parseColor("#FFD29922"))
-                    winStatus.text = "finish_fight will be replaced with WIN"
-                    winStatus.setTextColor(Color.parseColor("#FFD29922"))
-                    winStatus.visibility = View.VISIBLE
-                } else {
-                    winBtn.text = "ARM WIN"
-                    winBtn.setTextColor(Color.parseColor("#FF0D1117"))
-                    winBtn.setBackgroundColor(Color.parseColor("#FF3FB950"))
-                    winStatus.visibility = View.GONE
-                }
-            }
-            lastWinConfirmedId != null -> {
-                // Server confirmed the win.
-                interceptIsArmed = false
-                statusTv.text = "WIN CONFIRMED"
-                statusTv.setTextColor(Color.parseColor("#FF3FB950"))
-                idTv.text = "battle_id: $lastWinConfirmedId  /  server ACK"
-                idTv.visibility = View.VISIBLE
-                winBtn.visibility = View.GONE
-                rowRounds?.visibility = View.GONE
-                // winStatus intentionally NOT touched — shows the last intercept/inject result
-            }
-            else -> {
-                // No battle, no recent win — disarm any leftover arm state.
-                if (interceptIsArmed) {
-                    interceptIsArmed = false
-                    TrafficVpnService.instance?.disarmIntercept()
-                }
-                statusTv.text = "NO ACTIVE BATTLE"
-                statusTv.setTextColor(Color.parseColor("#FF8B949E"))
-                idTv.visibility = View.GONE
-                winBtn.visibility = View.GONE
-                rowRounds?.visibility = View.GONE
-                // winStatus intentionally NOT touched
-            }
-        }
-    }
-
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -286,27 +335,18 @@ class OverlayService : Service() {
         setupOverlay()
         AppState.viewModel.gameEvents.observeForever(eventObserver)
         AppState.viewModel.gameEvents.observeForever(winObserver)
+        AppState.viewModel.gameEvents.observeForever(gameEventsForTypeObserver)
         AppState.viewModel.currentBattle.observeForever(battleObserver)
         AppState.viewModel.clanRounds.observeForever(clanRoundsObserver)
         AppState.viewModel.raidFightActive.observeForever(raidFightObserver)
-        // Kick off background download of battle → rounds table.
         BattleConfig.fetchAsync(
             onLoaded = { count, version ->
-                Toast.makeText(
-                    this,
-                    "BattleConfig OK: $count battles (v$version)",
-                    Toast.LENGTH_LONG
-                ).show()
-                // Reset so the active battle re-queries with the now-populated table.
+                Toast.makeText(this, "BattleConfig OK: $count battles (v$version)", Toast.LENGTH_LONG).show()
                 autoSetBattleId = null
                 updateEventsPanel()
             },
             onError = { msg ->
-                Toast.makeText(
-                    this,
-                    "BattleConfig FAILED: $msg",
-                    Toast.LENGTH_LONG
-                ).show()
+                Toast.makeText(this, "BattleConfig FAILED: $msg", Toast.LENGTH_LONG).show()
             }
         )
     }
@@ -331,8 +371,46 @@ class OverlayService : Service() {
         this.x = x; this.y = y
     }
 
+    // ── Mode switching ────────────────────────────────────────────────────
+
+    private fun applyMode(view: View) {
+        val tabRow      = view.findViewById<View>(R.id.layout_tab_row)
+        val rvEvents    = view.findViewById<View>(R.id.rv_events)
+        val panelEvents = view.findViewById<View>(R.id.panel_events)
+        val panelUser   = view.findViewById<View>(R.id.panel_user_mode)
+        val statusBar   = view.findViewById<View>(R.id.tv_status_bar)
+        val eventCount  = view.findViewById<View>(R.id.tv_event_count)
+        val menuDevItems = view.findViewById<View>(R.id.panel_menu_dev_items)
+        val modeToggleTv = view.findViewById<TextView>(R.id.menu_mode_toggle)
+
+        if (isUserMode) {
+            tabRow?.visibility      = View.GONE
+            rvEvents?.visibility    = View.GONE
+            panelEvents?.visibility = View.GONE
+            statusBar?.visibility   = View.GONE
+            eventCount?.visibility  = View.GONE
+            panelUser?.visibility   = View.VISIBLE
+            menuDevItems?.visibility = View.GONE
+            modeToggleTv?.text      = "   DEV MODE"
+            // Refresh label colors for current states
+            updateUserModeBattleLabels()
+            updateUserModeRaidLabel(AppState.viewModel.raidFightActive.value == true)
+        } else {
+            tabRow?.visibility      = View.VISIBLE
+            // rv_events visible only when logs tab is active — restore logs tab as default
+            rvEvents?.visibility    = View.VISIBLE
+            panelEvents?.visibility = View.GONE
+            statusBar?.visibility   = View.VISIBLE
+            eventCount?.visibility  = View.VISIBLE
+            panelUser?.visibility   = View.GONE
+            menuDevItems?.visibility = View.VISIBLE
+            modeToggleTv?.text      = "   USER MODE"
+        }
+    }
+
     // ── Main overlay ──────────────────────────────────────────────────────
 
+    @Suppress("DEPRECATION")
     private fun setupOverlay() {
         val view = LayoutInflater.from(this).inflate(R.layout.layout_overlay, null)
         view.clipToOutline = true
@@ -360,7 +438,7 @@ class OverlayService : Service() {
                 if (menuPanel.visibility == View.GONE) View.VISIBLE else View.GONE
         }
 
-        // Clear logs
+        // Clear logs (dev mode only)
         view.findViewById<TextView>(R.id.menu_clear).setOnClickListener {
             val sz = events.size
             events.clear()
@@ -371,12 +449,18 @@ class OverlayService : Service() {
             menuPanel.visibility = View.GONE
         }
 
-        // Download logs — export raw bytes from ALL connections so the server's
-        // battle responses (on battleSocketId) are included, not just gameSocketId.
+        // Download logs (dev mode only)
         view.findViewById<TextView>(R.id.menu_download).setOnClickListener {
             menuPanel.visibility = View.GONE
             val msgs = AppState.viewModel.getAllMessages()
             LogDownloader.downloadAndShare(this, msgs)
+        }
+
+        // Mode toggle
+        view.findViewById<TextView>(R.id.menu_mode_toggle).setOnClickListener {
+            isUserMode = !isUserMode
+            menuPanel.visibility = View.GONE
+            applyMode(view)
         }
 
         // ── Tabs ──────────────────────────────────────────────────────────
@@ -408,17 +492,11 @@ class OverlayService : Service() {
         roundsValueTv?.text = roundsToWin.toString()
 
         view.findViewById<TextView>(R.id.btn_rounds_dec)?.setOnClickListener {
-            if (roundsToWin > 1) {
-                roundsToWin--
-                roundsValueTv?.text = roundsToWin.toString()
-            }
+            if (roundsToWin > 1) { roundsToWin--; roundsValueTv?.text = roundsToWin.toString() }
         }
 
         view.findViewById<TextView>(R.id.btn_rounds_inc)?.setOnClickListener {
-            if (roundsToWin < 9) {
-                roundsToWin++
-                roundsValueTv?.text = roundsToWin.toString()
-            }
+            if (roundsToWin < 9) { roundsToWin++; roundsValueTv?.text = roundsToWin.toString() }
         }
 
         // ── ARM MAX DMG button (raid intercept) ──────────────────────────
@@ -441,17 +519,9 @@ class OverlayService : Service() {
             updateRaidPanel(AppState.viewModel.raidFightActive.value == true)
         }
 
-        // ── Win Battle button (ARM WIN mode) ─────────────────────────────
-        // ARM WIN is the correct MITM approach: instead of injecting mid-fight
-        // (which the game client ignores — it's busy playing and not waiting for a
-        // server response), we arm an intercept that fires when the game naturally
-        // sends its own event_battle_finish_fight (on fight end / surrender / timeout).
-        // HAMMERSCALE replaces that packet with a crafted WIN using the SAME counter,
-        // so the server responds on the connection the game is already listening on.
-        // The game processes the win response and shows the WIN screen.
+        // ── ARM WIN button ────────────────────────────────────────────────
         view.findViewById<TextView>(R.id.btn_win_battle).setOnClickListener {
             val winStatus = view.findViewById<TextView>(R.id.tv_win_status)
-
             val vpnInstance = TrafficVpnService.instance
             if (vpnInstance == null) {
                 winStatus.text = "✗ FAIL: VPN not running"
@@ -459,21 +529,81 @@ class OverlayService : Service() {
                 winStatus.visibility = View.VISIBLE
                 return@setOnClickListener
             }
-
             if (interceptIsArmed) {
-                // Second press while armed → disarm / cancel
                 interceptIsArmed = false
                 vpnInstance.disarmIntercept()
                 updateEventsPanel()
             } else {
-                // First press → arm the intercept with the configured rounds value
                 interceptIsArmed = true
                 vpnInstance.armIntercept(roundsToWin)
                 updateEventsPanel()
             }
         }
 
-        // Sync current battle state immediately
+        // ── User mode switches ────────────────────────────────────────────
+        val swEvent = view.findViewById<Switch>(R.id.sw_event_battle)
+        val swClan  = view.findViewById<Switch>(R.id.sw_clan_battle)
+        val swRaid  = view.findViewById<Switch>(R.id.sw_raid)
+
+        styleSwitch(swEvent)
+        styleSwitch(swClan)
+        styleSwitch(swRaid)
+
+        swEvent.setOnCheckedChangeListener { _, checked ->
+            userEventBattleEnabled = checked
+            val vpn = TrafficVpnService.instance
+            if (checked) {
+                // Auto-arm immediately if an event battle is already active
+                if (activeBattleType == BattleType.EVENT && !interceptIsArmed && vpn != null) {
+                    interceptIsArmed = true
+                    vpn.armIntercept(roundsToWin)
+                }
+            } else {
+                // Disarm only if it was an event battle that armed us
+                if (interceptIsArmed && activeBattleType == BattleType.EVENT) {
+                    interceptIsArmed = false
+                    vpn?.disarmIntercept()
+                }
+            }
+        }
+
+        swClan.setOnCheckedChangeListener { _, checked ->
+            userClanBattleEnabled = checked
+            val vpn = TrafficVpnService.instance
+            if (checked) {
+                if (activeBattleType == BattleType.CLAN && !interceptIsArmed && vpn != null) {
+                    interceptIsArmed = true
+                    vpn.armIntercept(roundsToWin)
+                }
+            } else {
+                if (interceptIsArmed && activeBattleType == BattleType.CLAN) {
+                    interceptIsArmed = false
+                    vpn?.disarmIntercept()
+                }
+            }
+        }
+
+        swRaid.setOnCheckedChangeListener { _, checked ->
+            userRaidEnabled = checked
+            val vpn = TrafficVpnService.instance
+            if (checked) {
+                // Auto-arm immediately if a raid is already active
+                if (AppState.viewModel.raidFightActive.value == true && !raidInterceptArmed && vpn != null) {
+                    raidInterceptArmed = true
+                    vpn.armRaidIntercept()
+                }
+            } else {
+                if (raidInterceptArmed) {
+                    raidInterceptArmed = false
+                    vpn?.disarmRaidIntercept()
+                }
+            }
+        }
+
+        // Apply initial mode state
+        applyMode(view)
+
+        // Sync current battle state
         updateEventsPanel()
 
         windowManager.addView(view, params)
@@ -491,8 +621,14 @@ class OverlayService : Service() {
         miniView = view
         view.clipToOutline = true
         view.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-        view.findViewById<TextView>(R.id.tv_mini_count)?.text =
-            if (events.isEmpty()) "--" else "${events.size}"
+
+        val miniCountTv = view.findViewById<TextView>(R.id.tv_mini_count)
+        if (isUserMode) {
+            miniCountTv?.visibility = View.GONE
+        } else {
+            miniCountTv?.visibility = View.VISIBLE
+            miniCountTv?.text = if (events.isEmpty()) "--" else "${events.size}"
+        }
 
         val params = makeParams(w = dp(80f), h = dp(80f))
 
@@ -576,6 +712,7 @@ class OverlayService : Service() {
     override fun onDestroy() {
         AppState.viewModel.gameEvents.removeObserver(eventObserver)
         AppState.viewModel.gameEvents.removeObserver(winObserver)
+        AppState.viewModel.gameEvents.removeObserver(gameEventsForTypeObserver)
         AppState.viewModel.currentBattle.removeObserver(battleObserver)
         AppState.viewModel.clanRounds.removeObserver(clanRoundsObserver)
         AppState.viewModel.raidFightActive.removeObserver(raidFightObserver)

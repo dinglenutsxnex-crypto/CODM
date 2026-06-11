@@ -1,345 +1,483 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
+<FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/overlay_root"
     android:layout_width="360dp"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
     android:background="@drawable/overlay_bg"
     android:clipToOutline="true"
     android:elevation="12dp">
 
-    <!-- ── Header (drag handle) ── -->
+    <!-- ── Main content column ── -->
     <LinearLayout
-        android:id="@+id/overlay_header"
-        android:layout_width="match_parent"
-        android:layout_height="52dp"
-        android:orientation="horizontal"
-        android:background="@drawable/overlay_header_bg"
-        android:gravity="center_vertical"
-        android:paddingStart="12dp"
-        android:paddingEnd="4dp">
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="HAMMERSCALE"
-            android:textColor="#FF58A6FF"
-            android:textSize="13sp"
-            android:textStyle="bold"
-            android:fontFamily="monospace"
-            android:letterSpacing="0.1" />
-
-        <TextView
-            android:id="@+id/tv_event_count"
-            android:layout_width="wrap_content"
-            android:layout_height="20dp"
-            android:minWidth="20dp"
-            android:text="0"
-            android:textColor="#FF0D1117"
-            android:textSize="10sp"
-            android:textStyle="bold"
-            android:gravity="center"
-            android:background="#FF3FB950"
-            android:paddingHorizontal="5dp"
-            android:layout_marginEnd="8dp" />
-
-        <TextView
-            android:id="@+id/btn_menu"
-            android:layout_width="40dp"
-            android:layout_height="52dp"
-            android:text="..."
-            android:textColor="#FF8B949E"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:gravity="center"
-            android:clickable="true"
-            android:focusable="true" />
-
-        <TextView
-            android:id="@+id/btn_minimize"
-            android:layout_width="40dp"
-            android:layout_height="52dp"
-            android:text="−"
-            android:textColor="#FF8B949E"
-            android:textSize="20sp"
-            android:gravity="center"
-            android:clickable="true"
-            android:focusable="true" />
-
-    </LinearLayout>
-
-    <!-- ── Dropdown menu panel (hidden by default) ── -->
-    <LinearLayout
-        android:id="@+id/panel_menu"
+        android:id="@+id/overlay_root"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:background="#FF21262D"
-        android:visibility="gone">
+        android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/menu_clear"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:text="   CLEAR LOGS"
-            android:textColor="#FFE6EDF3"
-            android:textSize="13sp"
-            android:fontFamily="monospace"
-            android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
-            android:background="?android:attr/selectableItemBackground" />
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#FF30363D" />
-
-        <TextView
-            android:id="@+id/menu_download"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:text="   DOWNLOAD LOGS (.zip)"
-            android:textColor="#FFE6EDF3"
-            android:textSize="13sp"
-            android:fontFamily="monospace"
-            android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
-            android:background="?android:attr/selectableItemBackground" />
-
-    </LinearLayout>
-
-    <!-- ── Tab row ── -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="34dp"
-        android:orientation="horizontal"
-        android:background="#FF161B22">
-
-        <TextView
-            android:id="@+id/tab_logs"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:text="LOGS"
-            android:textColor="#FF58A6FF"
-            android:textSize="11sp"
-            android:textStyle="bold"
-            android:fontFamily="monospace"
-            android:gravity="center"
-            android:background="#FF0D1117"
-            android:clickable="true"
-            android:focusable="true" />
-
-        <View
-            android:layout_width="1dp"
-            android:layout_height="match_parent"
-            android:background="#FF30363D" />
-
-        <TextView
-            android:id="@+id/tab_events"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:text="EVENTS"
-            android:textColor="#FF8B949E"
-            android:textSize="11sp"
-            android:fontFamily="monospace"
-            android:gravity="center"
-            android:clickable="true"
-            android:focusable="true" />
-
-    </LinearLayout>
-
-    <!-- ── Logs tab: event list ── -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/rv_events"
-        android:layout_width="match_parent"
-        android:layout_height="300dp"
-        android:scrollbars="none"
-        android:overScrollMode="never" />
-
-    <!-- ── Events tab: game state panel ── -->
-    <LinearLayout
-        android:id="@+id/panel_events"
-        android:layout_width="match_parent"
-        android:layout_height="300dp"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:padding="20dp"
-        android:visibility="gone">
-
-        <TextView
-            android:id="@+id/tv_battle_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="NO ACTIVE BATTLE"
-            android:textColor="#FF8B949E"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:fontFamily="monospace"
-            android:gravity="center"
-            android:layout_marginBottom="6dp" />
-
-        <TextView
-            android:id="@+id/tv_battle_id"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text=""
-            android:textColor="#FFD29922"
-            android:textSize="11sp"
-            android:fontFamily="monospace"
-            android:gravity="center"
-            android:layout_marginBottom="20dp"
-            android:visibility="gone" />
-
-        <!-- ── Rounds row ── -->
+        <!-- ── Header (drag handle) ── -->
         <LinearLayout
-            android:id="@+id/row_rounds"
+            android:id="@+id/overlay_header"
             android:layout_width="match_parent"
-            android:layout_height="40dp"
+            android:layout_height="52dp"
             android:orientation="horizontal"
-            android:gravity="center"
-            android:layout_marginBottom="8dp"
-            android:visibility="gone">
+            android:background="@drawable/overlay_header_bg"
+            android:gravity="center_vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="4dp">
 
             <TextView
-                android:id="@+id/tv_rounds_label"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:text="ROUNDS  "
-                android:textColor="#FF8B949E"
-                android:textSize="11sp"
-                android:fontFamily="monospace" />
+                android:layout_weight="1"
+                android:text="HAMMERSCALE"
+                android:textColor="#FF58A6FF"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:letterSpacing="0.1" />
 
             <TextView
-                android:id="@+id/btn_rounds_dec"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:text="◀"
-                android:textColor="#FFE6EDF3"
-                android:textSize="14sp"
+                android:id="@+id/tv_event_count"
+                android:layout_width="wrap_content"
+                android:layout_height="20dp"
+                android:minWidth="20dp"
+                android:text="0"
+                android:textColor="#FF0D1117"
+                android:textSize="10sp"
+                android:textStyle="bold"
                 android:gravity="center"
-                android:background="#FF21262D"
+                android:background="#FF3FB950"
+                android:paddingHorizontal="5dp"
+                android:layout_marginEnd="8dp" />
+
+            <TextView
+                android:id="@+id/btn_menu"
+                android:layout_width="40dp"
+                android:layout_height="52dp"
+                android:text="..."
+                android:textColor="#FF8B949E"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:gravity="center"
                 android:clickable="true"
                 android:focusable="true" />
 
             <TextView
-                android:id="@+id/tv_rounds_value"
+                android:id="@+id/btn_minimize"
                 android:layout_width="40dp"
-                android:layout_height="36dp"
-                android:text="3"
-                android:textColor="#FF58A6FF"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:fontFamily="monospace"
-                android:gravity="center" />
-
-            <TextView
-                android:id="@+id/btn_rounds_inc"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:text="▶"
-                android:textColor="#FFE6EDF3"
-                android:textSize="14sp"
+                android:layout_height="52dp"
+                android:text="−"
+                android:textColor="#FF8B949E"
+                android:textSize="20sp"
                 android:gravity="center"
-                android:background="#FF21262D"
                 android:clickable="true"
                 android:focusable="true" />
 
         </LinearLayout>
 
-        <TextView
-            android:id="@+id/btn_win_battle"
+        <!-- ── Tab row (dev mode only) ── -->
+        <LinearLayout
+            android:id="@+id/layout_tab_row"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:text="ARM WIN"
-            android:textColor="#FF0D1117"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:fontFamily="monospace"
-            android:gravity="center"
-            android:background="#FF3FB950"
-            android:clickable="true"
-            android:focusable="true"
-            android:visibility="gone" />
+            android:layout_height="34dp"
+            android:orientation="horizontal"
+            android:background="#FF161B22">
 
-        <TextView
-            android:id="@+id/tv_win_status"
+            <TextView
+                android:id="@+id/tab_logs"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:text="LOGS"
+                android:textColor="#FF58A6FF"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:background="#FF0D1117"
+                android:clickable="true"
+                android:focusable="true" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="match_parent"
+                android:background="#FF30363D" />
+
+            <TextView
+                android:id="@+id/tab_events"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:text="EVENTS"
+                android:textColor="#FF8B949E"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:clickable="true"
+                android:focusable="true" />
+
+        </LinearLayout>
+
+        <!-- ── Logs tab: event list (dev mode only) ── -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rv_events"
+            android:layout_width="match_parent"
+            android:layout_height="300dp"
+            android:scrollbars="none"
+            android:overScrollMode="never" />
+
+        <!-- ── Events tab: game state panel (dev mode only) ── -->
+        <LinearLayout
+            android:id="@+id/panel_events"
+            android:layout_width="match_parent"
+            android:layout_height="300dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:padding="20dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tv_battle_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="NO ACTIVE BATTLE"
+                android:textColor="#FF8B949E"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:id="@+id/tv_battle_id"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="#FFD29922"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:layout_marginBottom="20dp"
+                android:visibility="gone" />
+
+            <!-- ── Rounds row ── -->
+            <LinearLayout
+                android:id="@+id/row_rounds"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginBottom="8dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/tv_rounds_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="ROUNDS  "
+                    android:textColor="#FF8B949E"
+                    android:textSize="11sp"
+                    android:fontFamily="monospace" />
+
+                <TextView
+                    android:id="@+id/btn_rounds_dec"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:text="◀"
+                    android:textColor="#FFE6EDF3"
+                    android:textSize="14sp"
+                    android:gravity="center"
+                    android:background="#FF21262D"
+                    android:clickable="true"
+                    android:focusable="true" />
+
+                <TextView
+                    android:id="@+id/tv_rounds_value"
+                    android:layout_width="40dp"
+                    android:layout_height="36dp"
+                    android:text="3"
+                    android:textColor="#FF58A6FF"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:fontFamily="monospace"
+                    android:gravity="center" />
+
+                <TextView
+                    android:id="@+id/btn_rounds_inc"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:text="▶"
+                    android:textColor="#FFE6EDF3"
+                    android:textSize="14sp"
+                    android:gravity="center"
+                    android:background="#FF21262D"
+                    android:clickable="true"
+                    android:focusable="true" />
+
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/btn_win_battle"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="ARM WIN"
+                android:textColor="#FF0D1117"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:background="#FF3FB950"
+                android:clickable="true"
+                android:focusable="true"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/tv_win_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="#FF58A6FF"
+                android:textSize="10sp"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:layout_marginTop="10dp"
+                android:visibility="gone" />
+
+            <!-- ── Divider ── -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#FF30363D"
+                android:layout_marginTop="16dp" />
+
+            <!-- ── Raid section ── -->
+            <TextView
+                android:id="@+id/tv_raid_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="NO ACTIVE RAID"
+                android:textColor="#FF8B949E"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:layout_marginTop="14dp"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/btn_raid_max_dmg"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="ARM MAX DMG"
+                android:textColor="#FF0D1117"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:background="#FFDA3633"
+                android:clickable="true"
+                android:focusable="true"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/tv_raid_arm_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="#FF58A6FF"
+                android:textSize="10sp"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:layout_marginTop="8dp"
+                android:visibility="gone" />
+
+        </LinearLayout>
+
+        <!-- ── User Mode Panel (user mode only, gone by default) ── -->
+        <LinearLayout
+            android:id="@+id/panel_user_mode"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text=""
-            android:textColor="#FF58A6FF"
-            android:textSize="10sp"
-            android:fontFamily="monospace"
-            android:gravity="center"
-            android:layout_marginTop="10dp"
-            android:visibility="gone" />
+            android:orientation="vertical"
+            android:paddingStart="20dp"
+            android:paddingEnd="20dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:visibility="gone">
 
-        <!-- ── Divider ── -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#FF30363D"
-            android:layout_marginTop="16dp" />
+            <!-- Event Battle Auto Win -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
 
-        <!-- ── Raid section ── -->
+                <TextView
+                    android:id="@+id/tv_label_event_battle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Event Battle Auto Win"
+                    android:textColor="#FFE6EDF3"
+                    android:textSize="13sp"
+                    android:fontFamily="monospace" />
+
+                <Switch
+                    android:id="@+id/sw_event_battle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="false" />
+
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#FF21262D" />
+
+            <!-- Clan Battle Auto Win -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/tv_label_clan_battle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Clan Battle Auto Win"
+                    android:textColor="#FFE6EDF3"
+                    android:textSize="13sp"
+                    android:fontFamily="monospace" />
+
+                <Switch
+                    android:id="@+id/sw_clan_battle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="false" />
+
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#FF21262D" />
+
+            <!-- Raid Max Dmg -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/tv_label_raid"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Raid Max Dmg"
+                    android:textColor="#FFE6EDF3"
+                    android:textSize="13sp"
+                    android:fontFamily="monospace" />
+
+                <Switch
+                    android:id="@+id/sw_raid"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="false" />
+
+            </LinearLayout>
+
+        </LinearLayout>
+
+        <!-- ── Status bar (dev mode only) ── -->
         <TextView
-            android:id="@+id/tv_raid_status"
+            android:id="@+id/tv_status_bar"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="NO ACTIVE RAID"
-            android:textColor="#FF8B949E"
-            android:textSize="12sp"
-            android:textStyle="bold"
+            android:layout_height="24dp"
+            android:text="no data yet"
+            android:textColor="#FF444C56"
+            android:textSize="9sp"
             android:fontFamily="monospace"
-            android:gravity="center"
-            android:layout_marginTop="14dp"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:id="@+id/btn_raid_max_dmg"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:text="ARM MAX DMG"
-            android:textColor="#FF0D1117"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:fontFamily="monospace"
-            android:gravity="center"
-            android:background="#FFDA3633"
-            android:clickable="true"
-            android:focusable="true"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/tv_raid_arm_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text=""
-            android:textColor="#FF58A6FF"
-            android:textSize="10sp"
-            android:fontFamily="monospace"
-            android:gravity="center"
-            android:layout_marginTop="8dp"
-            android:visibility="gone" />
+            android:gravity="center_vertical"
+            android:paddingHorizontal="10dp"
+            android:background="#FF0D1117" />
 
     </LinearLayout>
 
-    <!-- ── Status bar ── -->
-    <TextView
-        android:id="@+id/tv_status_bar"
+    <!-- ── Dropdown menu panel — floats over content below header ── -->
+    <LinearLayout
+        android:id="@+id/panel_menu"
         android:layout_width="match_parent"
-        android:layout_height="24dp"
-        android:text="no data yet"
-        android:textColor="#FF444C56"
-        android:textSize="9sp"
-        android:fontFamily="monospace"
-        android:gravity="center_vertical"
-        android:paddingHorizontal="10dp"
-        android:background="#FF0D1117" />
+        android:layout_height="wrap_content"
+        android:layout_marginTop="52dp"
+        android:layout_gravity="top"
+        android:orientation="vertical"
+        android:background="#FF21262D"
+        android:elevation="20dp"
+        android:visibility="gone">
 
-</LinearLayout>
+        <!-- Dev-mode-only items -->
+        <LinearLayout
+            android:id="@+id/panel_menu_dev_items"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/menu_clear"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="   CLEAR LOGS"
+                android:textColor="#FFE6EDF3"
+                android:textSize="13sp"
+                android:fontFamily="monospace"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:background="?android:attr/selectableItemBackground" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#FF30363D" />
+
+            <TextView
+                android:id="@+id/menu_download"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="   DOWNLOAD LOGS (.zip)"
+                android:textColor="#FFE6EDF3"
+                android:textSize="13sp"
+                android:fontFamily="monospace"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:background="?android:attr/selectableItemBackground" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#FF30363D" />
+
+        </LinearLayout>
+
+        <!-- Mode toggle — always visible in menu -->
+        <TextView
+            android:id="@+id/menu_mode_toggle"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="   USER MODE"
+            android:textColor="#FF58A6FF"
+            android:textSize="13sp"
+            android:fontFamily="monospace"
+            android:gravity="center_vertical"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?android:attr/selectableItemBackground" />
+
+    </LinearLayout>
+
+</FrameLayout>
