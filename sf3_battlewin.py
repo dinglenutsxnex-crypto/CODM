@@ -14,14 +14,18 @@ Protocol (plain TCP port 443, no TLS):
   Large packet:  0x02 + 4B LE length + raw-deflate-compressed protobuf
   Outer proto:   field[1]=counter  field[2]=command  field[3]=params_bytes
 
-Verified finish_fight params (from captured user_3 packet, battlem capture):
-  field[1]  varint = battleId            (from start_fight)
-  field[4]  varint = 3                   (constant — NOT 1)
-  field[6]  bytes  = {field[1]=ts_ms}    (current unix ms timestamp nested proto)
-  field[7]  varint = 1                   (constant — NOT rounds_to_win)
-  field[10] bytes  = ""                  (empty — no items bytes)
-  field[13] bytes  = {field[2]=29}       (result proto — NOT complex stats bytes)
-  NO field[5], NO field[14]
+Verified WIN finish_fight params (from 3002601_battle_win capture, user_194.7.bin):
+  field[1]  varint = battleId            WIN value: 3001601
+  field[4]  varint = 1                   1 = WIN  (game sends 3=LOSS on defeat — DO NOT copy that)
+  field[5]  varint = rounds              wonRounds (absent in loss packet — must be added)
+  field[6]  bytes  = {field[1]=ts_ms}    live timestamp nested proto
+  field[7]  varint = rounds              totalRounds (game sends 1 on loss)
+  field[10] bytes  = items               equipped items (empty in loss — must be added)
+  field[13] bytes  = stats               71-byte fight stats (2-byte junk in loss — must be real)
+  field[14] varint = 28                  player level (absent in loss — must be added)
+
+NOTE: battlem/user_3 shows the game's NATURAL LOSS packet — those values (field[4]=3,
+field[7]=1, empty items/stats) are what a LOSS looks like. Do not use them for a win.
 
 Usage:
   python3 sf3_battlewin.py               # interactive (pick battle)
@@ -283,50 +287,50 @@ def make_ping_ack(server_counter: int, server_inner: bytes) -> bytes:
 def make_battle_id_inner(battle_id: int) -> bytes:
     return enc_varint_field(1, battle_id)
 
-def _make_finish_fight_inner(battle_id: int) -> bytes:
-    """
-    Builds the params inner for event_battle_finish_fight.
+# WIN constants captured from 3002601_battle_win / user_194.7.bin
+# These are the values the game sends on a REAL WIN — verified field by field.
+_WIN_ITEMS = bytes.fromhex("0a0508d10c10040a0508d20c1004")
+_WIN_STATS = bytes.fromhex(
+    "081c104c1a03080c08220310120e2a03040704"
+    "320c0000803fb2d77b3f0000803f"
+    "3a0c000000000000000000000000"
+    "420cd6a3603ed6a3603ed8a3603e"
+    "4a03263c24"
+    "5203000100"
+)
+_WIN_LEVEL = 28
 
-    Verified byte-for-byte against captured outbound packet (battlem/user_3):
+
+def _make_finish_fight_inner(battle_id: int, rounds: int = 3) -> bytes:
+    """
+    Builds the params inner for event_battle_finish_fight — WIN variant.
+
+    Values verified against 3002601_battle_win / user_194.7.bin (real game win):
 
       field[1]  varint = battle_id
-                  (the ID sent in event_battle_start_fight)
-
-      field[4]  varint = 3
-                  FIXED: was 1 in old script — capture shows 3
-
-      field[6]  bytes  = { field[1] = current_unix_ms }
-                  Nested proto: 1-byte tag (0x08) + varint(timestamp_ms).
-                  This is a TIMESTAMP, not a random "seed". Using a fresh
-                  timestamp every call is correct. Old script used a stale
-                  hardcoded 7-byte blob from a previous capture.
-
-      field[7]  varint = 1
-                  FIXED: was rounds_to_win in old script — capture always shows 1
-
-      field[10] bytes  = b""
-                  FIXED: old script sent non-empty _FIGHT_ITEMS_BYTES
-
-      field[13] bytes  = { field[2] = 29 }
-                  FIXED: old script sent a large complex _FIGHT_STATS_BYTES blob
-
-    Removed vs old script: field[5] (wonRounds), field[14] (PLAYER_LEVEL)
-    — neither field appears anywhere in the actual capture.
+      field[4]  varint = 1          WIN  (3 = LOSS — do NOT use the loss packet values)
+      field[5]  varint = rounds      wonRounds
+      field[6]  bytes  = ts_proto    live timestamp {field[1]=unix_ms}
+      field[7]  varint = rounds      totalRounds
+      field[10] bytes  = _WIN_ITEMS  equipped items from real win
+      field[13] bytes  = _WIN_STATS  fight stats from real win (71 bytes)
+      field[14] varint = _WIN_LEVEL  player level from real win
     """
-    ts_proto  = enc_varint_field(1, int(time.time() * 1000))
-    res_proto = enc_varint_field(2, 29)
+    ts_proto = enc_varint_field(1, int(time.time() * 1000))
 
     inner  = enc_varint_field(1, battle_id)
-    inner += enc_varint_field(4, 3)
+    inner += enc_varint_field(4, 1)
+    inner += enc_varint_field(5, rounds)
     inner += enc_bytes(6, ts_proto)
-    inner += enc_varint_field(7, 1)
-    inner += enc_bytes(10, b"")
-    inner += enc_bytes(13, res_proto)
+    inner += enc_varint_field(7, rounds)
+    inner += enc_bytes(10, _WIN_ITEMS)
+    inner += enc_bytes(13, _WIN_STATS)
+    inner += enc_varint_field(14, _WIN_LEVEL)
     return inner
 
-def make_finish_fight_win(battle_id: int) -> bytes:
+def make_finish_fight_win(battle_id: int, rounds: int = 3) -> bytes:
     """Standalone packet builder. counter=0 placeholder — caller wraps with build_outer if needed."""
-    inner = _make_finish_fight_inner(battle_id)
+    inner = _make_finish_fight_inner(battle_id, rounds)
     outer = build_outer(0, "event_battle_finish_fight", inner)
     return large_pkt(outer) if len(outer) > 255 else small_pkt(outer)
 
