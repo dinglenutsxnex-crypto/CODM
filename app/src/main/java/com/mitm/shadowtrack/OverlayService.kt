@@ -494,12 +494,7 @@ class OverlayService : Service() {
         view.findViewById<TextView>(R.id.tv_mini_count)?.text =
             if (events.isEmpty()) "--" else "${events.size}"
 
-        val params = makeParams(w = dp(72f), h = dp(72f)).also {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                it.flags = it.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                it.blurBehindRadius = 28
-            }
-        }
+        val params = makeParams(w = dp(80f), h = dp(80f))
 
         var startX = 0; var startY = 0
         var rawX = 0f; var rawY = 0f

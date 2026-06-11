@@ -1,35 +1,43 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
+<FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="72dp"
-    android:layout_height="72dp"
-    android:orientation="vertical"
-    android:gravity="center"
-    android:background="@drawable/glass_mini_bg"
+    android:layout_width="80dp"
+    android:layout_height="80dp"
     android:elevation="16dp"
     android:clickable="true"
-    android:focusable="true"
-    android:clipToOutline="true">
+    android:focusable="true">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="[HS]"
-        android:textColor="#FF58A6FF"
-        android:textSize="15sp"
-        android:textStyle="bold"
-        android:fontFamily="monospace"
-        android:gravity="center" />
+    <com.mitm.shadowtrack.GlassCircleView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
-    <TextView
-        android:id="@+id/tv_mini_count"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="--"
-        android:textColor="#663FB950"
-        android:textSize="9sp"
-        android:textStyle="bold"
-        android:fontFamily="monospace"
-        android:gravity="center" />
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center">
 
-</LinearLayout>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="[HS]"
+            android:textColor="#FF39FF14"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:gravity="center" />
+
+        <TextView
+            android:id="@+id/tv_mini_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="--"
+            android:textColor="#CC39FF14"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:gravity="center" />
+
+    </LinearLayout>
+
+</FrameLayout>
