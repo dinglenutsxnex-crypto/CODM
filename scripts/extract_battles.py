@@ -7,6 +7,9 @@ definitions, and writes data/battles.json.
 Run by the GitHub Actions workflow. Also runnable locally:
     python3 scripts/extract_battles.py
 
+    # Skip download/decrypt and use a local decrypted inner-config ZIP:
+    python3 scripts/extract_battles.py --local-zip /path/to/inner_config.zip
+
 Output format (data/battles.json):
 {
   "generated": "2026-06-11T06:00:00Z",
@@ -20,6 +23,7 @@ Output format (data/battles.json):
 Keys are battle IDs (strings), values are RoundsToWin integers.
 """
 
+import argparse
 import json
 import os
 import random
@@ -183,7 +187,7 @@ def _extract_entry(buf: bytes, entry) -> bytes:
 
 # ── Battle parser ─────────────────────────────────────────────────────────────
 #
-# Three complementary strategies cover all known SF3 battle definition patterns:
+# Four complementary strategies cover all known SF3 battle definition patterns:
 #
 # Strategy 1 – Direct scan (all scripts/features/ + scripts/z_utils/ JS files)
 #   • Long window (2000 chars): ID → DefaultTemplate → RoundsToWin
@@ -202,6 +206,87 @@ def _extract_entry(buf: bytes, entry) -> bytes:
 #   • For PROP: __assign({...}, BASE), build PROP → rounds (1-level)
 #   • For __assign({ID: N, ...}, TEMPLATE.PROP), resolve 2-level chain
 #   Covers: summer_fest and other template-spread event battles
+#
+# Strategy 4 – Skeleton/meta battles (cross-file: skeleton JS + skin JS)
+#   • skeleton_danger.js / skeleton_incremental.js define key → RoundsToWin
+#     via tight  key:__assign({..., RoundsToWin:N, ...}, ...)  blocks
+#   • Each *_skin.js maps those same keys to concrete IDs via
+#     prepareArchBattle(template, {ID: NNNNN, ...}) calls
+#   • For keys without explicit RoundsToWin (lockers → 1; classic fights →
+#     roundCountSettings.roundsToWins[0] or ceil(N_fights/2))
+#   Covers: level_1_as3 (3101111), level_2_*, level_3_*, level_4_* across all
+#           skins; incremental survival/boss battles in cosmetic, british, etc.
+
+
+# ── Strategy 4 helpers ────────────────────────────────────────────────────────
+
+_LOCKER_KEYS = frozenset({
+    'level_2_locker', 'level_3_locker', 'level_4_locker',
+})
+
+
+def _parse_skeleton_key_rounds(text: str) -> dict:
+    """Return {key: RoundsToWin} for keys with an EXPLICIT value in a skeleton
+    JS file.  Uses a tight per-key window (next key's __assign start) so we
+    don't bleed RoundsToWin values across keys."""
+    bad = frozenset(('var', 'function', 'return', 'if', 'else', 'new'))
+    positions = [
+        (m.group(1), m.start())
+        for m in re.finditer(r'(\w+)\s*:\s*__assign\s*\(', text)
+        if m.group(1) not in bad
+    ]
+    result = {}
+    for i, (key, pos) in enumerate(positions):
+        end = positions[i + 1][1] if i + 1 < len(positions) else len(text)
+        chunk = text[pos:end]
+        rm = re.search(r'\bRoundsToWin\s*:\s*(\d+)', chunk)
+        if rm:
+            result[key] = int(rm.group(1))
+    return result
+
+
+def _infer_rounds_from_skin(skin_text: str, key: str) -> int:
+    """Infer RoundsToWin for a skeleton key that has no explicit value in the
+    skeleton JS file.  Reads the skin data block for that key to find:
+      • roundCountSettings.roundsToWins → use roundsToWins[0]
+      • classic fights count N          → ceil(N / 2)
+    Falls back to 2."""
+    m = re.search(re.escape(key) + r'\s*:\s*\{', skin_text)
+    if not m:
+        return 2
+    chunk = skin_text[m.start(): min(len(skin_text), m.start() + 1500)]
+    rcs = re.search(r'roundsToWins\s*:\s*\[(\d+)', chunk)
+    if rcs:
+        return int(rcs.group(1))
+    fights_m = re.search(r'fights\s*:\s*\{([^}]+)\}', chunk)
+    if fights_m:
+        n = len(re.findall(r'"\d+"', fights_m.group(1)))
+        if n > 0:
+            return (n + 1) // 2
+    return 2
+
+
+def _parse_skin_skeleton_battles(skin_text: str, skeleton_rounds: dict) -> list:
+    """Return (battle_id, rounds) pairs for all non-intro_ keys in a skin file.
+    Rounds come from skeleton_rounds (explicit) or from skin data inference.
+    intro_* keys are intentionally skipped (handled by Strategy 2)."""
+    results = []
+    pat = re.compile(
+        r'(\w+)\s*:\s*prepareArchBattle\s*\([^,]+,\s*\{[^}]*?ID\s*:\s*(\d{5,})'
+    )
+    for m in pat.finditer(skin_text):
+        key, bid_str = m.group(1), m.group(2)
+        if key.startswith('intro'):
+            continue
+        bid = int(bid_str)
+        if key in _LOCKER_KEYS:
+            results.append((bid, 1))
+        elif key in skeleton_rounds:
+            results.append((bid, skeleton_rounds[key]))
+        else:
+            rounds = _infer_rounds_from_skin(skin_text, key)
+            results.append((bid, rounds))
+    return results
 
 
 def _parse_direct(text: str) -> list:
@@ -335,6 +420,35 @@ def parse_all_battles(config_zip_bytes: bytes) -> dict:
         except Exception as ex:
             print(f"    [!] Error parsing {ef[0]}: {ex}")
 
+    # ── Strategy 4: skeleton/meta battles (lowest priority, fills gaps) ──────────
+    # Build combined key→rounds map from skeleton_danger.js and
+    # skeleton_incremental.js, then cross-reference with each skin file.
+    skeleton_rounds: dict = {}
+    skeleton_files = [
+        e for e in entries
+        if e[0].startswith('scripts/features/events/templates/skeletons/')
+        and e[0].endswith('.js')
+    ]
+    for sf in skeleton_files:
+        try:
+            skel_text = _extract_entry(config_zip_bytes, sf).decode('utf-8', errors='replace')
+            skeleton_rounds.update(_parse_skeleton_key_rounds(skel_text))
+        except Exception as ex:
+            print(f"    [!] skeleton parse error {sf[0]}: {ex}")
+
+    if skeleton_rounds:
+        print(f"    Skeleton key rounds loaded: {len(skeleton_rounds)} explicit keys")
+        for dir_key, fmap in skin_dirs.items():
+            if 'skin' not in fmap:
+                continue
+            try:
+                skin_text = _extract_entry(config_zip_bytes, fmap['skin']).decode('utf-8', errors='replace')
+                for bid, rnd in _parse_skin_skeleton_battles(skin_text, skeleton_rounds):
+                    if bid not in seen:
+                        seen[bid] = rnd
+            except Exception as ex:
+                print(f"    [!] skin_skeleton error in {dir_key}: {ex}")
+
     print(f"    Found {len(seen)} battle entries")
     return {str(k): v for k, v in sorted(seen.items())}
 
@@ -342,34 +456,70 @@ def parse_all_battles(config_zip_bytes: bytes) -> dict:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    rand = random.randint(1000, 9999)
-    url = BALANCE_URL.format(rand=rand)
-    print(f"[1] Fetching balance: {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "UnityPlayer/2022.3"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        balance = json.loads(r.read())
+    parser = argparse.ArgumentParser(description="Extract SF3 battle IDs to data/battles.json")
+    parser.add_argument(
+        "--local-zip",
+        metavar="PATH",
+        help=(
+            "Path to a decrypted inner-config ZIP file.  "
+            "When provided, steps 1-3 (balance fetch / download / decrypt) are "
+            "skipped and the ZIP is used directly."
+        ),
+    )
+    args = parser.parse_args()
 
-    version_str = balance["version"]["cur"]
-    config_url  = balance["version"]["url"]
-    print(f"    Version : {version_str}")
-    print(f"    ZIP URL : {config_url}")
+    if args.local_zip:
+        # ── Local-zip mode: skip network + decrypt steps ──────────────────────
+        zip_path = os.path.abspath(args.local_zip)
+        if not os.path.isfile(zip_path):
+            sys.exit(f"ERROR: --local-zip file not found: {zip_path}")
+        print(f"[local] Reading inner-config ZIP: {zip_path}")
+        with open(zip_path, "rb") as f:
+            inner_zip = f.read()
+        print(f"        {len(inner_zip):,} bytes")
 
-    print(f"[2] Downloading config archive…")
-    req2 = urllib.request.Request(config_url, headers={"User-Agent": "UnityPlayer/2022.3"})
-    with urllib.request.urlopen(req2, timeout=60) as r:
-        outer_zip = r.read()
-    print(f"    Downloaded {len(outer_zip):,} bytes")
+        # Try to read version from version.json inside the zip
+        version_str = "local"
+        try:
+            entries = _zip_entries(inner_zip)
+            ver_entries = [e for e in entries if e[0].endswith('version.json')]
+            if ver_entries:
+                ver_data = json.loads(_extract_entry(inner_zip, ver_entries[0]).decode())
+                version_str = ver_data.get("version", ver_data.get("Version", "local"))
+        except Exception:
+            pass
+        print(f"        Version : {version_str}")
 
-    print(f"[3] Finding + decrypting .enc entry…")
-    entries = _zip_entries(outer_zip)
-    enc_entries = [e for e in entries if e[0].endswith('.enc')]
-    if not enc_entries:
-        sys.exit("ERROR: no .enc file found in outer ZIP")
-    enc_entry = min(enc_entries, key=lambda e: len(e[0].split('/')[-1]))
-    print(f"    Entry   : {enc_entry[0]}")
-    enc_data = _extract_entry(outer_zip, enc_entry)
-    inner_zip = aes128_cbc_decrypt(enc_data, AES_KEY, AES_IV)
-    print(f"    Decrypted to {len(inner_zip):,} bytes")
+    else:
+        # ── Network mode: fetch balance, download, decrypt ────────────────────
+        rand = random.randint(1000, 9999)
+        url = BALANCE_URL.format(rand=rand)
+        print(f"[1] Fetching balance: {url}")
+        req = urllib.request.Request(url, headers={"User-Agent": "UnityPlayer/2022.3"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            balance = json.loads(r.read())
+
+        version_str = balance["version"]["cur"]
+        config_url  = balance["version"]["url"]
+        print(f"    Version : {version_str}")
+        print(f"    ZIP URL : {config_url}")
+
+        print(f"[2] Downloading config archive…")
+        req2 = urllib.request.Request(config_url, headers={"User-Agent": "UnityPlayer/2022.3"})
+        with urllib.request.urlopen(req2, timeout=60) as r:
+            outer_zip = r.read()
+        print(f"    Downloaded {len(outer_zip):,} bytes")
+
+        print(f"[3] Finding + decrypting .enc entry…")
+        entries = _zip_entries(outer_zip)
+        enc_entries = [e for e in entries if e[0].endswith('.enc')]
+        if not enc_entries:
+            sys.exit("ERROR: no .enc file found in outer ZIP")
+        enc_entry = min(enc_entries, key=lambda e: len(e[0].split('/')[-1]))
+        print(f"    Entry   : {enc_entry[0]}")
+        enc_data = _extract_entry(outer_zip, enc_entry)
+        inner_zip = aes128_cbc_decrypt(enc_data, AES_KEY, AES_IV)
+        print(f"    Decrypted to {len(inner_zip):,} bytes")
 
     print(f"[4] Parsing battles from inner config ZIP…")
     battles = parse_all_battles(inner_zip)

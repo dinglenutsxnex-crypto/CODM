@@ -1,1 +1,2 @@
 - [SF3 intercept root cause](sf3-intercept-root-cause.md) — mid-fight injection wins server-side but game ignores it; ARM-WIN intercept-and-replace is the fix
+- [SF3 extract_battles skeleton strategy](sf3-skeleton-battles.md) — how skeleton/meta battle IDs (level_1_as3 etc.) are extracted in Strategy 4
