@@ -196,6 +196,16 @@ object GameProtocolParser {
                 // Use "?" (wildcard) for hero-fight confirmations so the ViewModel always
                 // clears regardless of ID. For other end commands (finish_fight clan etc.)
                 // the server does echo back the client's battle ID in field[1], so match normally.
+                //
+                // ERROR GUARD: If params is null the server returned an error envelope
+                // (field[4]=error_code, field[5]=error_string) — NOT a real win.
+                // Emitting WinConfirmed for error responses is a false positive that shows
+                // "WIN CONFIRMED" in the overlay even when the server rejected the request.
+                // In that case emit BattleCommand so the error is visible in the events log
+                // without triggering the "WIN CONFIRMED" UI state.
+                if (command == "event_battle_finish_fight" && params == null) {
+                    return GameEvent.BattleCommand(command, null, false)
+                }
                 val battleId = if (command == "event_battle_finish_fight") null
                                else params?.let { extractBattleIdDirect(it) }
                 GameEvent.WinConfirmed(battleId ?: "?")
