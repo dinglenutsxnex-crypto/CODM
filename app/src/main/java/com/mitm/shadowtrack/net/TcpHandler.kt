@@ -177,11 +177,10 @@ class TcpHandler(
             // The finish_fight frame is always a small packet (≤ 57 B in captures)
             // so it always arrives as one complete TCP segment — no partial-frame risk.
             val interceptedWin: ByteArray? = if (interceptArmed.get()) {
-                GameProtocolParser.tryExtractFinishFight(packet.payload)
-                    ?.let { (battleId, counter) ->
-                        interceptArmed.set(false)
-                        PacketInjector.buildFinishFight(battleId, counter)
-                    }
+                if (GameProtocolParser.tryExtractFinishFight(packet.payload) != null) {
+                    interceptArmed.set(false)
+                    PacketInjector.patchFinishFightToWin(packet.payload)
+                } else null
             } else null
 
             // What actually goes to the server (and appears in the LOGS)

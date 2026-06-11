@@ -49,31 +49,79 @@ object PacketInjector {
     private const val WIN_LEVEL = 28L
 
     /**
-     * Build a finish-fight WIN packet using the game's own battleId and counter.
+     * Surgically patch the game's own finish_fight packet to report a WIN.
      *
-     * Called from TcpHandler's ARM-WIN intercept path: the game sent its natural
-     * finish_fight (with loss values), we extracted battleId + counter from it,
-     * and now send this replacement instead so the server sees a WIN on the exact
-     * connection the game's state machine is already waiting on.
+     * Takes the raw SF3 frame the game was about to send, makes a copy, navigates
+     * the protobuf bytes to find field[4] inside the params, and sets its value to
+     * 1 (WIN). Every other byte — battleId, counter, rounds, items, stats, level —
+     * is preserved exactly as the game set it.
      *
-     * @param battleId  From tryExtractFinishFight — the battle the game just finished.
-     * @param counter   The game's own counter from that packet — reused verbatim.
-     * @param rounds    Rounds to report as won/total. Default 3 matches event battles.
+     * field[4] is always a single-byte varint (values 1–3), so the packet length
+     * never changes and no re-framing is required.
+     *
+     * Returns the patched packet, or the original unchanged if parsing fails.
      */
-    fun buildFinishFight(battleId: Long, counter: Long, rounds: Long = 3L): ByteArray {
-        val seedProto = proto { varintField(1, System.currentTimeMillis()) }
+    fun patchFinishFightToWin(data: ByteArray): ByteArray {
+        if (data.size < 3 || (data[0].toInt() and 0xFF) != 0x01) return data
+        val out = data.copyOf()
+        val protoEnd = 2 + (data[1].toInt() and 0xFF)
 
-        val params = proto {
-            varintField(1,  battleId)
-            varintField(4,  1L)          // WIN
-            varintField(5,  rounds)      // wonRounds
-            bytesField(6,   seedProto)   // live timestamp
-            varintField(7,  rounds)      // totalRounds
-            bytesField(10,  WIN_ITEMS)
-            bytesField(13,  WIN_STATS)
-            varintField(14, WIN_LEVEL)
+        // Walk the outer envelope to find field[3] (params), tag = 0x1a (LEN wire type)
+        var pos = 2
+        while (pos < protoEnd) {
+            val tagByte = out[pos].toInt() and 0xFF
+            pos++
+            val fieldNum = tagByte ushr 3
+            val wireType = tagByte and 7
+            when (wireType) {
+                0 -> { while (pos < protoEnd && (out[pos].toInt() and 0x80) != 0) pos++; pos++ }
+                2 -> {
+                    var len = 0; var shift = 0
+                    while (pos < protoEnd) {
+                        val b = out[pos++].toInt() and 0xFF
+                        len = len or ((b and 0x7F) shl shift)
+                        if (b and 0x80 == 0) break
+                        shift += 7
+                    }
+                    if (fieldNum == 3) {
+                        // Found params — walk it to find field[4], tag = 0x20
+                        val paramsEnd = pos + len
+                        var pp = pos
+                        while (pp < paramsEnd) {
+                            val ptag = out[pp].toInt() and 0xFF
+                            pp++
+                            val pField = ptag ushr 3
+                            val pWire  = ptag and 7
+                            when (pWire) {
+                                0 -> {
+                                    if (pField == 4) {
+                                        out[pp] = 0x01  // flip to WIN, leave all other bytes untouched
+                                        return out
+                                    }
+                                    while (pp < paramsEnd && (out[pp].toInt() and 0x80) != 0) pp++
+                                    pp++
+                                }
+                                2 -> {
+                                    var plen = 0; var pshift = 0
+                                    while (pp < paramsEnd) {
+                                        val b = out[pp++].toInt() and 0xFF
+                                        plen = plen or ((b and 0x7F) shl pshift)
+                                        if (b and 0x80 == 0) break
+                                        pshift += 7
+                                    }
+                                    pp += plen
+                                }
+                                else -> return data
+                            }
+                        }
+                        return data // field[4] not found in params
+                    }
+                    pos += len
+                }
+                else -> return data
+            }
         }
-        return envelope("event_battle_finish_fight", params, counter = counter)
+        return data
     }
 
     // ── Proto writer ──────────────────────────────────────────────────────
