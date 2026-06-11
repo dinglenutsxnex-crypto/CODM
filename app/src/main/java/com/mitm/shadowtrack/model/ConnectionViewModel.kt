@@ -48,6 +48,11 @@ class ConnectionViewModel : ViewModel() {
     private val _currentBattle = MutableLiveData<BattleState?>(null)
     val currentBattle: LiveData<BattleState?> = _currentBattle
 
+    // Auto-detected round count from the server's clan_start_fight response.
+    // Null until a clan battle response is sniffed; reset on clearAll().
+    private val _clanRounds = MutableLiveData<Int?>(null)
+    val clanRounds: LiveData<Int?> = _clanRounds
+
     data class Stats(
         val totalConnections: Int = 0,
         val activeConnections: Int = 0,
@@ -131,6 +136,16 @@ class ConnectionViewModel : ViewModel() {
 
                 val event = GameProtocolParser.parse(message.data, message.direction)
                 if (event != null) {
+                    // When the SERVER echoes clan_start_fight back, extract the round
+                    // count embedded in the response's battle config blob so the overlay
+                    // can display — and ARM WIN can use — the correct value automatically.
+                    if (event is GameEvent.Command
+                        && !event.isOutbound
+                        && event.name == "clan_start_fight") {
+                        val rounds = GameProtocolParser.extractClanRoundsFromStartResponse(message.data)
+                        if (rounds != null) _clanRounds.postValue(rounds)
+                    }
+
                     synchronized(gameEventList) {
                         gameEventList.add(event)
                         if (gameEventList.size > 2000) gameEventList.removeAt(0)
@@ -202,6 +217,7 @@ class ConnectionViewModel : ViewModel() {
         synchronized(gameEventList) { gameEventList.clear() }
         _gameEvents.postValue(emptyList())
         _currentBattle.postValue(null)
+        _clanRounds.postValue(null)
         publishUpdate()
     }
 

@@ -100,6 +100,25 @@ class OverlayService : Service() {
         updateEventsPanel()
     }
 
+    // ── Clan rounds observer ───────────────────────────────────────────────
+    // Fires when the ViewModel successfully extracts rounds from the server's
+    // inbound clan_start_fight response. Updates roundsToWin so ARM WIN (and
+    // the clan auto-intercept) both use the server-specified value.
+    private val clanRoundsObserver = Observer<Int?> { rounds ->
+        if (rounds == null) return@Observer
+        roundsToWin = rounds
+        overlayView?.let { v ->
+            v.findViewById<TextView>(R.id.tv_rounds_value)?.text = rounds.toString()
+            v.findViewById<TextView>(R.id.tv_rounds_label)?.let { label ->
+                label.text = "max rounds  "
+                label.setTextColor(Color.parseColor("#FF58A6FF"))
+            }
+        }
+        // Mark autoSetBattleId so updateEventsPanel() doesn't overwrite with null lookup.
+        autoSetBattleId = currentBattleId
+        Toast.makeText(this, "Clan rounds auto-detected: $rounds", Toast.LENGTH_SHORT).show()
+    }
+
     // ── Win confirmation observer (via event stream) ──────────────────────
 
     private val winObserver = Observer<List<GameEvent>> { list ->
@@ -220,6 +239,7 @@ class OverlayService : Service() {
         AppState.viewModel.gameEvents.observeForever(eventObserver)
         AppState.viewModel.gameEvents.observeForever(winObserver)
         AppState.viewModel.currentBattle.observeForever(battleObserver)
+        AppState.viewModel.clanRounds.observeForever(clanRoundsObserver)
         // Kick off background download of battle → rounds table.
         BattleConfig.fetchAsync(
             onLoaded = { count, version ->
@@ -484,6 +504,7 @@ class OverlayService : Service() {
         AppState.viewModel.gameEvents.removeObserver(eventObserver)
         AppState.viewModel.gameEvents.removeObserver(winObserver)
         AppState.viewModel.currentBattle.removeObserver(battleObserver)
+        AppState.viewModel.clanRounds.removeObserver(clanRoundsObserver)
         serviceScope.cancel()
         removeOverlay()
         removeMini()
