@@ -7,6 +7,8 @@ import android.graphics.PixelFormat
 import android.os.IBinder
 import android.util.TypedValue
 import android.view.*
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.TextView
 import androidx.lifecycle.Observer
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -31,6 +33,9 @@ class OverlayService : Service() {
     private var overlayView: View? = null
     private var miniView: View? = null
 
+    // Stored so we can update flags (focusable toggle for battle data URL input).
+    private lateinit var overlayParams: WindowManager.LayoutParams
+
     private val events = mutableListOf<GameEvent>()
     private lateinit var adapter: GameEventAdapter
 
@@ -41,29 +46,17 @@ class OverlayService : Service() {
     private var lastWinConfirmedId: String? = null
 
     // True while the ARM-WIN intercept is set in TcpHandler.
-    // The next outbound finish_fight from the game will be replaced with a WIN packet.
     private var interceptIsArmed = false
 
-    // Background scope for IO work (e.g. injectDirect) that must not run on main thread.
+    // Background scope for IO work.
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Index into the ViewModel's gameEventList — how many items from that list we've
-    // already added to our local `events`.  The ViewModel uses a rolling 2000-item cap;
-    // we track by index within the CURRENT snapshot rather than by absolute count so
-    // we never lose events when the ViewModel drops old ones from the front.
+    // Index into the ViewModel's gameEventList.
     private var vmEventsCursor = 0
 
     // ── Event log observer ────────────────────────────────────────────────
 
     private val eventObserver = Observer<List<GameEvent>> { newList ->
-        // The ViewModel maintains a rolling window (up to 2000 items). Our local `events`
-        // list grows without bound (cleared by the Clear button).  We must correctly
-        // identify which items in `newList` are new since our last update.
-        //
-        // Strategy: `vmEventsCursor` is how many items from `newList` we've already
-        // consumed.  When the ViewModel hasn't rolled over yet, vmEventsCursor == events.size
-        // (they grow together).  After a roll-over the ViewModel drops old events off the
-        // front, so newList.size < vmEventsCursor — in that case all remaining items are new.
         val added = if (vmEventsCursor < newList.size) newList.drop(vmEventsCursor) else emptyList()
         vmEventsCursor = newList.size
 
@@ -91,7 +84,7 @@ class OverlayService : Service() {
         updateEventsPanel()
     }
 
-    // ── Win confirmation observer (via event stream) ──────────────────────
+    // ── Win confirmation observer ──────────────────────────────────────────
 
     private val winObserver = Observer<List<GameEvent>> { list ->
         val last = list.lastOrNull()
@@ -103,8 +96,7 @@ class OverlayService : Service() {
 
     private fun isAtBottom(rv: RecyclerView): Boolean {
         val lm = rv.layoutManager as? LinearLayoutManager ?: return true
-        val last = lm.findLastVisibleItemPosition()
-        return last >= adapter.itemCount - 2
+        return lm.findLastVisibleItemPosition() >= adapter.itemCount - 2
     }
 
     // ── Events panel sync ──────────────────────────────────────────────────
@@ -119,9 +111,6 @@ class OverlayService : Service() {
         val id = currentBattleId
         when {
             id != null -> {
-                // Active battle — show ARM WIN button.
-                // This is the ONLY branch that resets winStatus — a new battle starting
-                // means any previous result is stale.
                 statusTv.text = "BATTLE ACTIVE"
                 statusTv.setTextColor(Color.parseColor("#FF3FB950"))
                 idTv.text = "battle_id: $id"
@@ -130,7 +119,6 @@ class OverlayService : Service() {
                 lastWinConfirmedId = null
 
                 if (interceptIsArmed) {
-                    // Intercept is set — button shows armed state, status shows hint.
                     winBtn.text = "⚡ ARMED — play to fight end"
                     winBtn.setTextColor(Color.parseColor("#FF0D1117"))
                     winBtn.setBackgroundColor(Color.parseColor("#FFD29922"))
@@ -145,17 +133,14 @@ class OverlayService : Service() {
                 }
             }
             lastWinConfirmedId != null -> {
-                // Server confirmed the win.
                 interceptIsArmed = false
                 statusTv.text = "WIN CONFIRMED"
                 statusTv.setTextColor(Color.parseColor("#FF3FB950"))
                 idTv.text = "battle_id: $lastWinConfirmedId  /  server ACK"
                 idTv.visibility = View.VISIBLE
                 winBtn.visibility = View.GONE
-                // winStatus intentionally NOT touched — shows the last intercept/inject result
             }
             else -> {
-                // No battle, no recent win — disarm any leftover arm state.
                 if (interceptIsArmed) {
                     interceptIsArmed = false
                     TrafficVpnService.instance?.disarmIntercept()
@@ -164,7 +149,6 @@ class OverlayService : Service() {
                 statusTv.setTextColor(Color.parseColor("#FF8B949E"))
                 idTv.visibility = View.GONE
                 winBtn.visibility = View.GONE
-                // winStatus intentionally NOT touched
             }
         }
     }
@@ -182,6 +166,11 @@ class OverlayService : Service() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         adapter = GameEventAdapter(events)
+
+        // Load battle data cache from disk immediately so patchFinishFightToWin
+        // has correct maxRounds values available before the first intercept fires.
+        BattleDataCache.load(this)
+
         setupOverlay()
         AppState.viewModel.gameEvents.observeForever(eventObserver)
         AppState.viewModel.gameEvents.observeForever(winObserver)
@@ -208,6 +197,24 @@ class OverlayService : Service() {
         this.x = x; this.y = y
     }
 
+    // Toggle keyboard-focusable mode on the overlay window.
+    // Must be called on the main thread.
+    private fun setOverlayFocusable(focusable: Boolean) {
+        val view = overlayView ?: return
+        if (focusable) {
+            overlayParams.flags = overlayParams.flags and
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            overlayParams.flags = overlayParams.flags or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        } else {
+            overlayParams.flags = overlayParams.flags or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            overlayParams.flags = overlayParams.flags and
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL.inv()
+        }
+        try { windowManager.updateViewLayout(view, overlayParams) } catch (_: Exception) {}
+    }
+
     // ── Main overlay ──────────────────────────────────────────────────────
 
     private fun setupOverlay() {
@@ -220,8 +227,8 @@ class OverlayService : Service() {
             adapter = this@OverlayService.adapter
         }
 
-        val params = makeParams()
-        attachDrag(view.findViewById(R.id.overlay_header), view, params)
+        overlayParams = makeParams()
+        attachDrag(view.findViewById(R.id.overlay_header), view, overlayParams)
 
         // Minimize
         view.findViewById<TextView>(R.id.btn_minimize).setOnClickListener {
@@ -229,10 +236,17 @@ class OverlayService : Service() {
         }
 
         // Triple-dot menu
-        val menuPanel = view.findViewById<View>(R.id.panel_menu)
+        val menuPanel        = view.findViewById<View>(R.id.panel_menu)
+        val panelBattleData  = view.findViewById<View>(R.id.panel_battle_data)
         view.findViewById<TextView>(R.id.btn_menu).setOnClickListener {
-            menuPanel.visibility =
-                if (menuPanel.visibility == View.GONE) View.VISIBLE else View.GONE
+            val open = menuPanel.visibility != View.VISIBLE
+            menuPanel.visibility = if (open) View.VISIBLE else View.GONE
+            if (!open) {
+                // Closing the menu also closes the battle data panel and restores focus state.
+                if (panelBattleData.visibility == View.VISIBLE) {
+                    dismissBattleDataPanel(view, panelBattleData)
+                }
+            }
         }
 
         // Clear logs
@@ -246,17 +260,26 @@ class OverlayService : Service() {
             menuPanel.visibility = View.GONE
         }
 
-        // Download logs — export raw bytes from ALL connections so the server's
-        // battle responses (on battleSocketId) are included, not just gameSocketId.
+        // Download logs
         view.findViewById<TextView>(R.id.menu_download).setOnClickListener {
             menuPanel.visibility = View.GONE
             val msgs = AppState.viewModel.getAllMessages()
             LogDownloader.downloadAndShare(this, msgs)
         }
 
+        // Battle data panel toggle
+        view.findViewById<TextView>(R.id.menu_battle_data).setOnClickListener {
+            if (panelBattleData.visibility == View.VISIBLE) {
+                dismissBattleDataPanel(view, panelBattleData)
+            } else {
+                menuPanel.visibility = View.GONE
+                showBattleDataPanel(view, panelBattleData)
+            }
+        }
+
         // ── Tabs ──────────────────────────────────────────────────────────
-        val tabLogs   = view.findViewById<TextView>(R.id.tab_logs)
-        val tabEvents = view.findViewById<TextView>(R.id.tab_events)
+        val tabLogs     = view.findViewById<TextView>(R.id.tab_logs)
+        val tabEvents   = view.findViewById<TextView>(R.id.tab_events)
         val panelEvents = view.findViewById<View>(R.id.panel_events)
 
         tabLogs.setOnClickListener {
@@ -278,17 +301,9 @@ class OverlayService : Service() {
             updateEventsPanel()
         }
 
-        // ── Win Battle button (ARM WIN mode) ─────────────────────────────
-        // ARM WIN is the correct MITM approach: instead of injecting mid-fight
-        // (which the game client ignores — it's busy playing and not waiting for a
-        // server response), we arm an intercept that fires when the game naturally
-        // sends its own event_battle_finish_fight (on fight end / surrender / timeout).
-        // HAMMERSCALE replaces that packet with a crafted WIN using the SAME counter,
-        // so the server responds on the connection the game is already listening on.
-        // The game processes the win response and shows the WIN screen.
+        // ── ARM WIN button ────────────────────────────────────────────────
         view.findViewById<TextView>(R.id.btn_win_battle).setOnClickListener {
             val winStatus = view.findViewById<TextView>(R.id.tv_win_status)
-
             val vpnInstance = TrafficVpnService.instance
             if (vpnInstance == null) {
                 winStatus.text = "✗ FAIL: VPN not running"
@@ -296,25 +311,126 @@ class OverlayService : Service() {
                 winStatus.visibility = View.VISIBLE
                 return@setOnClickListener
             }
-
             if (interceptIsArmed) {
-                // Second press while armed → disarm / cancel
                 interceptIsArmed = false
                 vpnInstance.disarmIntercept()
                 updateEventsPanel()
             } else {
-                // First press → arm the intercept
                 interceptIsArmed = true
                 vpnInstance.armIntercept()
                 updateEventsPanel()
             }
         }
 
-        // Sync current battle state immediately
         updateEventsPanel()
+        refreshBattleDataStatus(view)
 
-        windowManager.addView(view, params)
+        windowManager.addView(view, overlayParams)
     }
+
+    // ── Battle data panel ─────────────────────────────────────────────────
+
+    private fun showBattleDataPanel(root: View, panel: View) {
+        val urlEt = root.findViewById<EditText>(R.id.et_bdc_url)
+        if (urlEt.text.isNullOrEmpty()) {
+            urlEt.setText(BattleDataCache.DEFAULT_URL)
+        }
+        refreshBattleDataStatus(root)
+        panel.visibility = View.VISIBLE
+
+        // Enable focusable so the EditText and keyboard work.
+        setOverlayFocusable(true)
+
+        // Download button
+        root.findViewById<TextView>(R.id.btn_bdc_download).setOnClickListener {
+            val url = urlEt.text.toString().trim()
+            if (url.isEmpty()) return@setOnClickListener
+            hideKeyboard(urlEt)
+            startBattleDataDownload(root, url)
+        }
+
+        // IME done action
+        urlEt.setOnEditorActionListener { _, _, _ ->
+            hideKeyboard(urlEt)
+            val url = urlEt.text.toString().trim()
+            if (url.isNotEmpty()) startBattleDataDownload(root, url)
+            true
+        }
+    }
+
+    private fun dismissBattleDataPanel(root: View, panel: View) {
+        hideKeyboard(root.findViewById(R.id.et_bdc_url))
+        setOverlayFocusable(false)
+        panel.visibility = View.GONE
+    }
+
+    private fun startBattleDataDownload(root: View, url: String) {
+        val progressTv = root.findViewById<TextView>(R.id.tv_bdc_progress)
+        val listTv     = root.findViewById<TextView>(R.id.tv_bdc_list)
+        val statusTv   = root.findViewById<TextView>(R.id.tv_bdc_status)
+
+        progressTv.visibility = View.VISIBLE
+        progressTv.setTextColor(Color.parseColor("#FFD29922"))
+        progressTv.text = "Starting…"
+
+        serviceScope.launch {
+            BattleDataCache.downloadAndParse(url, this@OverlayService) { msg ->
+                launch(Dispatchers.Main) {
+                    progressTv.text = msg
+                    val isError = msg.startsWith("FAILED")
+                    progressTv.setTextColor(
+                        Color.parseColor(if (isError) "#FFFF4444" else "#FFD29922")
+                    )
+                    if (msg.startsWith("Done")) {
+                        progressTv.setTextColor(Color.parseColor("#FF3FB950"))
+                        refreshBattleDataStatus(root)
+                        renderBattleList(listTv)
+                        statusTv.text = "${BattleDataCache.count()} battles"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun refreshBattleDataStatus(root: View) {
+        val count    = BattleDataCache.count()
+        val statusTv = root.findViewById<TextView>(R.id.tv_bdc_status) ?: return
+        val listTv   = root.findViewById<TextView>(R.id.tv_bdc_list) ?: return
+
+        if (count > 0) {
+            statusTv.text = "$count battles"
+            statusTv.setTextColor(Color.parseColor("#FF3FB950"))
+            renderBattleList(listTv)
+        } else {
+            statusTv.text = "no cache"
+            statusTv.setTextColor(Color.parseColor("#FF8B949E"))
+            listTv.text = ""
+        }
+    }
+
+    private fun renderBattleList(tv: TextView) {
+        val sb = StringBuilder()
+        for (b in BattleDataCache.getList()) {
+            sb.append(
+                "%8d  %-20s  %s  %dR  %s\n".format(
+                    b.id,
+                    b.name.take(20),
+                    b.type.take(9).padEnd(9),
+                    b.rounds,
+                    b.visible
+                )
+            )
+        }
+        tv.text = if (sb.isEmpty()) "no data" else sb.toString()
+    }
+
+    private fun hideKeyboard(view: View?) {
+        view ?: return
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(view.windowToken, 0)
+    }
+
+    // ── Overlay/mini lifecycle ─────────────────────────────────────────────
 
     private fun removeOverlay() {
         overlayView?.let { try { windowManager.removeView(it) } catch (_: Exception) {} }
@@ -340,8 +456,7 @@ class OverlayService : Service() {
                 MotionEvent.ACTION_DOWN -> {
                     startX = params.x; startY = params.y
                     rawX = ev.rawX; rawY = ev.rawY
-                    dragged = false
-                    true
+                    dragged = false; true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (rawX - ev.rawX).toInt()
@@ -350,16 +465,12 @@ class OverlayService : Service() {
                     if (dragged) {
                         params.x = (startX + dx).coerceAtLeast(0)
                         params.y = (startY + dy).coerceAtLeast(0)
-                        savedX = params.x
-                        savedY = params.y
+                        savedX = params.x; savedY = params.y
                         try { windowManager.updateViewLayout(view, params) } catch (_: Exception) {}
                     }
                     true
                 }
-                MotionEvent.ACTION_UP -> {
-                    if (!dragged) { removeMini(); setupOverlay() }
-                    true
-                }
+                MotionEvent.ACTION_UP -> { if (!dragged) { removeMini(); setupOverlay() }; true }
                 else -> false
             }
         }
@@ -384,8 +495,7 @@ class OverlayService : Service() {
                 MotionEvent.ACTION_DOWN -> {
                     startX = params.x; startY = params.y
                     rawX = event.rawX; rawY = event.rawY
-                    dragging = false
-                    true
+                    dragging = false; true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (rawX - event.rawX).toInt()
@@ -394,8 +504,7 @@ class OverlayService : Service() {
                     if (dragging) {
                         params.x = (startX + dx).coerceAtLeast(0)
                         params.y = (startY + dy).coerceAtLeast(0)
-                        savedX = params.x
-                        savedY = params.y
+                        savedX = params.x; savedY = params.y
                         try { windowManager.updateViewLayout(root, params) } catch (_: Exception) {}
                     }
                     true

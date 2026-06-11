@@ -109,6 +109,131 @@
             android:focusable="true"
             android:background="?android:attr/selectableItemBackground" />
 
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#FF30363D" />
+
+        <TextView
+            android:id="@+id/menu_battle_data"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="   BATTLE DATA ▸"
+            android:textColor="#FFE6EDF3"
+            android:textSize="13sp"
+            android:fontFamily="monospace"
+            android:gravity="center_vertical"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?android:attr/selectableItemBackground" />
+
+    </LinearLayout>
+
+    <!-- ── Battle data panel (hidden by default) ── -->
+    <LinearLayout
+        android:id="@+id/panel_battle_data"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="#FF161B22"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="10dp"
+        android:visibility="gone">
+
+        <!-- Status row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="BATTLE DATA"
+                android:textColor="#FF58A6FF"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace" />
+
+            <TextView
+                android:id="@+id/tv_bdc_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="no cache"
+                android:textColor="#FF8B949E"
+                android:textSize="11sp"
+                android:fontFamily="monospace" />
+
+        </LinearLayout>
+
+        <!-- URL input -->
+        <EditText
+            android:id="@+id/et_bdc_url"
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:background="#FF21262D"
+            android:textColor="#FFE6EDF3"
+            android:textColorHint="#FF444C56"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:paddingHorizontal="8dp"
+            android:singleLine="true"
+            android:inputType="textUri"
+            android:imeOptions="actionDone"
+            android:hint="https://sf3assets.nekki.com/…"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Download button -->
+        <TextView
+            android:id="@+id/btn_bdc_download"
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:text="DOWNLOAD &amp; PARSE"
+            android:textColor="#FF0D1117"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:background="#FF388BFD"
+            android:clickable="true"
+            android:focusable="true"
+            android:layout_marginBottom="6dp" />
+
+        <!-- Progress / result line -->
+        <TextView
+            android:id="@+id/tv_bdc_progress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#FFD29922"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:layout_marginBottom="6dp"
+            android:visibility="gone" />
+
+        <!-- Scrollable battle list -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="140dp"
+            android:background="#FF0D1117"
+            android:overScrollMode="never">
+
+            <TextView
+                android:id="@+id/tv_bdc_list"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="#FF6E7681"
+                android:textSize="9sp"
+                android:fontFamily="monospace"
+                android:padding="6dp"
+                android:lineSpacingMultiplier="1.3" />
+
+        </ScrollView>
+
     </LinearLayout>
 
     <!-- ── Tab row ── -->
