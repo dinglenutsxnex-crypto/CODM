@@ -72,7 +72,6 @@ class MainActivity : AppCompatActivity() {
                 binding.tvStatus.text = "○ IDLE — Tap ▶ to start"
                 binding.tvStatus.setTextColor(getColor(R.color.text_secondary))
                 if (viewModel.gameSocketId.value == null) {
-                    binding.tvWaitingTitle.text = "Waiting for game socket"
                     binding.tvWaitingSub.text = "Start VPN and open Shadow Fight 3"
                 }
                 // Stop overlay when VPN stops
@@ -81,7 +80,6 @@ class MainActivity : AppCompatActivity() {
                 binding.tvStatus.text = "● LIVE — scanning…"
                 binding.tvStatus.setTextColor(getColor(R.color.green_active))
                 if (viewModel.gameSocketId.value == null) {
-                    binding.tvWaitingTitle.text = "VPN active — scanning"
                     binding.tvWaitingSub.text = "Open Shadow Fight 3 to detect game socket"
                 }
                 // Start overlay automatically when VPN starts (if permission granted)
