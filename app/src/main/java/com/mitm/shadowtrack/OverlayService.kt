@@ -139,13 +139,17 @@ class OverlayService : Service() {
 
     // ── Raid fight observer ────────────────────────────────────────────────
     private val raidFightObserver = Observer<Boolean> { active ->
+        val wasArmed = raidInterceptArmed   // capture before updateRaidPanel resets it
         updateRaidPanel(active)
         if (isUserMode) {
             updateUserModeRaidLabel(active)
-            // Auto-arm when raid starts if toggle is ON; updateRaidPanel handles disarm on end.
             if (active && userRaidEnabled && !raidInterceptArmed) {
+                // Auto-arm when raid starts if toggle is ON
                 raidInterceptArmed = true
                 TrafficVpnService.instance?.armRaidIntercept()
+            } else if (!active && wasArmed) {
+                // Raid ended with our intercept armed → server accepted max damage
+                flashLabelGreen(R.id.tv_label_raid)
             }
         }
     }
@@ -176,11 +180,20 @@ class OverlayService : Service() {
                 }
             }
             is GameEvent.WinConfirmed -> {
+                val typeWon = activeBattleType  // capture before reset
                 pendingArmJob?.cancel()
                 pendingArmJob = null
                 activeBattleType = BattleType.NONE
                 interceptIsArmed = false
-                if (isUserMode) updateUserModeBattleLabels()
+                if (isUserMode) {
+                    updateUserModeBattleLabels()
+                    // Flash the relevant label green for 2 s — server confirmed our win
+                    when (typeWon) {
+                        BattleType.EVENT -> flashLabelGreen(R.id.tv_label_event_battle)
+                        BattleType.CLAN  -> flashLabelGreen(R.id.tv_label_clan_battle)
+                        else             -> {}
+                    }
+                }
             }
             is GameEvent.BattleCommand -> {
                 if (last.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")) {
@@ -224,6 +237,16 @@ class OverlayService : Service() {
         val v = overlayView ?: return
         val tvRaid = v.findViewById<TextView>(R.id.tv_label_raid) ?: return
         tvRaid.setTextColor(if (raidActive) labelColorActive else labelColorNormal)
+    }
+
+    // ── Green flash helper (user-mode server-confirm feedback) ────────────
+    private fun flashLabelGreen(labelResId: Int) {
+        val tv = overlayView?.findViewById<TextView>(labelResId) ?: return
+        tv.setTextColor(Color.parseColor("#FF3FB950"))
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            overlayView?.findViewById<TextView>(labelResId)
+                ?.setTextColor(labelColorNormal)
+        }, 2_000)
     }
 
     // ── Switch styling helper ──────────────────────────────────────────────
@@ -585,6 +608,12 @@ class OverlayService : Service() {
         styleSwitch(swEvent)
         styleSwitch(swClan)
         styleSwitch(swRaid)
+
+        // Restore session state BEFORE attaching listeners so setting isChecked
+        // doesn't fire the callbacks and trigger spurious arm/disarm calls.
+        swEvent.isChecked = userEventBattleEnabled
+        swClan.isChecked  = userClanBattleEnabled
+        swRaid.isChecked  = userRaidEnabled
 
         swEvent.setOnCheckedChangeListener { _, checked ->
             userEventBattleEnabled = checked
