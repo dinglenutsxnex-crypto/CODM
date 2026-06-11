@@ -20,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class OverlayService : Service() {
@@ -49,6 +50,9 @@ class OverlayService : Service() {
     private var autoSetBattleId: String? = null
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Delayed auto-arm job — cancelled if battle ends before the 3-sec window fires.
+    private var pendingArmJob: Job? = null
 
     private var vmEventsCursor = 0
 
@@ -112,6 +116,7 @@ class OverlayService : Service() {
     // ── Clan rounds observer ───────────────────────────────────────────────
     private val clanRoundsObserver = Observer<Int?> { rounds ->
         if (rounds == null) return@Observer
+        val prev = roundsToWin
         roundsToWin = rounds
         overlayView?.let { v ->
             v.findViewById<TextView>(R.id.tv_rounds_value)?.text = rounds.toString()
@@ -121,7 +126,14 @@ class OverlayService : Service() {
             }
         }
         autoSetBattleId = currentBattleId
-        Toast.makeText(this, "Clan rounds auto-detected: $rounds", Toast.LENGTH_SHORT).show()
+        // If intercept is already armed (user-mode auto-armed before server responded),
+        // update the stored rounds value so the patch uses the real server value.
+        if (interceptIsArmed) {
+            TrafficVpnService.instance?.armIntercept(roundsToWin)
+            Toast.makeText(this, "Clan rounds: $rounds (was $prev) — intercept updated", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Clan rounds from server: $rounds", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // ── Raid fight observer ────────────────────────────────────────────────
@@ -138,22 +150,34 @@ class OverlayService : Service() {
                 activeBattleType = if (last.commandName == "event_battle_start_fight")
                     BattleType.EVENT else BattleType.CLAN
                 if (isUserMode) updateUserModeBattleLabels()
-                // Auto-arm if matching toggle is on
-                if (activeBattleType == BattleType.EVENT && userEventBattleEnabled && !interceptIsArmed) {
-                    interceptIsArmed = true
-                    TrafficVpnService.instance?.armIntercept(roundsToWin)
-                } else if (activeBattleType == BattleType.CLAN && userClanBattleEnabled && !interceptIsArmed) {
-                    interceptIsArmed = true
-                    TrafficVpnService.instance?.armIntercept(roundsToWin)
+
+                val shouldArm = (activeBattleType == BattleType.EVENT && userEventBattleEnabled) ||
+                                (activeBattleType == BattleType.CLAN  && userClanBattleEnabled)
+
+                if (shouldArm && !interceptIsArmed) {
+                    // Delay 3 s so BattleConfig / clan server response can update roundsToWin
+                    // before we commit to the arm.  Job is cancelled if the battle ends first.
+                    pendingArmJob?.cancel()
+                    pendingArmJob = serviceScope.launch {
+                        delay(3_000)
+                        if (!interceptIsArmed) {
+                            interceptIsArmed = true
+                            TrafficVpnService.instance?.armIntercept(roundsToWin)
+                        }
+                    }
                 }
             }
             is GameEvent.WinConfirmed -> {
+                pendingArmJob?.cancel()
+                pendingArmJob = null
                 activeBattleType = BattleType.NONE
                 interceptIsArmed = false
                 if (isUserMode) updateUserModeBattleLabels()
             }
             is GameEvent.BattleCommand -> {
                 if (last.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")) {
+                    pendingArmJob?.cancel()
+                    pendingArmJob = null
                     activeBattleType = BattleType.NONE
                     interceptIsArmed = false
                     if (isUserMode) updateUserModeBattleLabels()
@@ -558,13 +582,20 @@ class OverlayService : Service() {
             userEventBattleEnabled = checked
             val vpn = TrafficVpnService.instance
             if (checked) {
-                // Auto-arm immediately if an event battle is already active
+                // Battle already active — schedule delayed arm so rounds are settled
                 if (activeBattleType == BattleType.EVENT && !interceptIsArmed && vpn != null) {
-                    interceptIsArmed = true
-                    vpn.armIntercept(roundsToWin)
+                    pendingArmJob?.cancel()
+                    pendingArmJob = serviceScope.launch {
+                        delay(3_000)
+                        if (!interceptIsArmed) {
+                            interceptIsArmed = true
+                            TrafficVpnService.instance?.armIntercept(roundsToWin)
+                        }
+                    }
                 }
             } else {
-                // Disarm only if it was an event battle that armed us
+                pendingArmJob?.cancel()
+                pendingArmJob = null
                 if (interceptIsArmed && activeBattleType == BattleType.EVENT) {
                     interceptIsArmed = false
                     vpn?.disarmIntercept()
@@ -577,10 +608,18 @@ class OverlayService : Service() {
             val vpn = TrafficVpnService.instance
             if (checked) {
                 if (activeBattleType == BattleType.CLAN && !interceptIsArmed && vpn != null) {
-                    interceptIsArmed = true
-                    vpn.armIntercept(roundsToWin)
+                    pendingArmJob?.cancel()
+                    pendingArmJob = serviceScope.launch {
+                        delay(3_000)
+                        if (!interceptIsArmed) {
+                            interceptIsArmed = true
+                            TrafficVpnService.instance?.armIntercept(roundsToWin)
+                        }
+                    }
                 }
             } else {
+                pendingArmJob?.cancel()
+                pendingArmJob = null
                 if (interceptIsArmed && activeBattleType == BattleType.CLAN) {
                     interceptIsArmed = false
                     vpn?.disarmIntercept()
@@ -721,6 +760,7 @@ class OverlayService : Service() {
         AppState.viewModel.currentBattle.removeObserver(battleObserver)
         AppState.viewModel.clanRounds.removeObserver(clanRoundsObserver)
         AppState.viewModel.raidFightActive.removeObserver(raidFightObserver)
+        pendingArmJob?.cancel()
         serviceScope.cancel()
         removeOverlay()
         removeMini()
