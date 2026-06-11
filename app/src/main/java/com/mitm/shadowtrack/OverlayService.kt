@@ -48,6 +48,10 @@ class OverlayService : Service() {
     // Range 1–9. Default 3 (standard Shadow Fight 3 battle).
     private var roundsToWin: Int = 3
 
+    // Last battle ID for which we ran the BattleConfig auto-lookup, so we
+    // don't overwrite a user-adjusted value on every panel refresh.
+    private var autoSetBattleId: String? = null
+
     // Background scope for IO work (e.g. injectDirect) that must not run on main thread.
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -135,6 +139,24 @@ class OverlayService : Service() {
                 rowRounds?.visibility = View.VISIBLE
                 lastWinConfirmedId = null
 
+                // Auto-detect rounds from the downloaded config table.
+                // Only runs once per unique battle ID so a user-adjusted value is preserved.
+                if (id != autoSetBattleId) {
+                    autoSetBattleId = id
+                    val autoRounds = BattleConfig.roundsFor(id)
+                    val labelTv = v.findViewById<android.widget.TextView>(R.id.tv_rounds_label)
+                    if (autoRounds != null) {
+                        roundsToWin = autoRounds
+                        overlayView?.findViewById<android.widget.TextView>(R.id.tv_rounds_value)
+                            ?.text = roundsToWin.toString()
+                        labelTv?.text = "max rounds  "
+                        labelTv?.setTextColor(Color.parseColor("#FF58A6FF"))
+                    } else {
+                        labelTv?.text = "ROUNDS  "
+                        labelTv?.setTextColor(Color.parseColor("#FF8B949E"))
+                    }
+                }
+
                 if (interceptIsArmed) {
                     // Intercept is set — button shows armed state, status shows hint.
                     winBtn.text = "⚡ ARMED — play to fight end"
@@ -194,6 +216,9 @@ class OverlayService : Service() {
         AppState.viewModel.gameEvents.observeForever(eventObserver)
         AppState.viewModel.gameEvents.observeForever(winObserver)
         AppState.viewModel.currentBattle.observeForever(battleObserver)
+        // Kick off background download of battle → rounds table.
+        // Runs on a daemon thread; failures are silently swallowed.
+        BattleConfig.fetchAsync()
     }
 
     // ── WindowManager params ──────────────────────────────────────────────

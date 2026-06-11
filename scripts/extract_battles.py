@@ -1,0 +1,273 @@
+"""
+extract_battles.py
+==================
+Fetches the latest SF3 config archive, decrypts it, parses all event battle
+definitions, and writes data/battles.json.
+
+Run by the GitHub Actions workflow. Also runnable locally:
+    python3 scripts/extract_battles.py
+
+Output format (data/battles.json):
+{
+  "generated": "2026-06-11T06:00:00Z",
+  "version":   "1.45.0.10.16666-prod",
+  "battles": {
+    "3002601": 3,
+    "3000602": 3,
+    ...
+  }
+}
+Keys are battle IDs (strings), values are RoundsToWin integers.
+"""
+
+import json
+import os
+import random
+import re
+import struct
+import sys
+import urllib.request
+import zlib
+from datetime import datetime, timezone
+
+# ── Balance endpoint ──────────────────────────────────────────────────────────
+BALANCE_URL = (
+    "https://sfxlbalt.nekki.com:9043/balance"
+    "?w=IN&fv=1.485.0.10.6-prod&rand={rand}&p=Android"
+)
+
+# ── AES-128-CBC key + IV (from verified SF3 config decryption) ────────────────
+AES_KEY = bytes.fromhex("08050674cc9ab867197f0cad55a770ca")
+AES_IV  = bytes.fromhex("653e0715236e0f734f1ebf64228b322d")
+
+# ── Output path ───────────────────────────────────────────────────────────────
+OUT_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "battles.json")
+
+
+# ── Pure-Python AES-128-CBC decrypt ──────────────────────────────────────────
+
+def _build_aes_tables():
+    S = [
+        0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+        0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+        0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+        0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+        0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+        0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+        0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+        0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+        0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+        0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+        0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+        0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+        0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+        0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+        0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+        0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16,
+    ]
+    SI = [0] * 256
+    for i, v in enumerate(S):
+        SI[v] = i
+
+    def gmul(a, b):
+        p = 0
+        for _ in range(8):
+            if b & 1: p ^= a
+            hi = a & 0x80; a = (a << 1) & 0xff
+            if hi: a ^= 0x1b
+            b >>= 1
+        return p
+
+    m9  = [gmul(i, 9)  for i in range(256)]
+    m11 = [gmul(i, 11) for i in range(256)]
+    m13 = [gmul(i, 13) for i in range(256)]
+    m14 = [gmul(i, 14) for i in range(256)]
+    rcon = [0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36]
+    return S, SI, m9, m11, m13, m14, rcon
+
+_S, _SI, _M9, _M11, _M13, _M14, _RCON = _build_aes_tables()
+
+
+def _sub_word(w):
+    return (_S[w>>24]<<24)|(_S[(w>>16)&0xff]<<16)|(_S[(w>>8)&0xff]<<8)|_S[w&0xff]
+
+def _rot_word(w):
+    return ((w<<8)|(w>>24))&0xffffffff
+
+def _key_expand(key: bytes):
+    w = [int.from_bytes(key[i:i+4], 'big') for i in range(0, 16, 4)]
+    for i in range(4, 44):
+        t = w[i-1]
+        if i % 4 == 0:
+            t = _sub_word(_rot_word(t)) ^ (_RCON[i//4-1] << 24)
+        w.append(w[i-4] ^ t)
+    return [[w[r*4], w[r*4+1], w[r*4+2], w[r*4+3]] for r in range(11)]
+
+def _aes128_decrypt_block(blk: bytes, rk) -> bytes:
+    s = [[blk[r+4*c] for c in range(4)] for r in range(4)]
+    for c in range(4):
+        for r in range(4): s[r][c] ^= (rk[10][c] >> (24-r*8)) & 0xff
+    for rnd in range(9, 0, -1):
+        s[1][0],s[1][1],s[1][2],s[1][3] = s[1][3],s[1][0],s[1][1],s[1][2]
+        s[2][0],s[2][1],s[2][2],s[2][3] = s[2][2],s[2][3],s[2][0],s[2][1]
+        s[3][0],s[3][1],s[3][2],s[3][3] = s[3][1],s[3][2],s[3][3],s[3][0]
+        for r in range(4):
+            for c in range(4): s[r][c] = _SI[s[r][c]]
+        for c in range(4):
+            for r in range(4): s[r][c] ^= (rk[rnd][c] >> (24-r*8)) & 0xff
+        for c in range(4):
+            a,b,d,e = s[0][c],s[1][c],s[2][c],s[3][c]
+            s[0][c] = _M14[a]^_M11[b]^_M13[d]^_M9[e]
+            s[1][c] = _M9[a] ^_M14[b]^_M11[d]^_M13[e]
+            s[2][c] = _M13[a]^_M9[b] ^_M14[d]^_M11[e]
+            s[3][c] = _M11[a]^_M13[b]^_M9[d] ^_M14[e]
+    s[1][0],s[1][1],s[1][2],s[1][3] = s[1][3],s[1][0],s[1][1],s[1][2]
+    s[2][0],s[2][1],s[2][2],s[2][3] = s[2][2],s[2][3],s[2][0],s[2][1]
+    s[3][0],s[3][1],s[3][2],s[3][3] = s[3][1],s[3][2],s[3][3],s[3][0]
+    for r in range(4):
+        for c in range(4): s[r][c] = _SI[s[r][c]]
+    for c in range(4):
+        for r in range(4): s[r][c] ^= (rk[0][c] >> (24-r*8)) & 0xff
+    return bytes(s[r][c] for c in range(4) for r in range(4))
+
+def aes128_cbc_decrypt(data: bytes, key: bytes, iv: bytes) -> bytes:
+    rk = _key_expand(key)
+    out = bytearray()
+    prev = iv
+    for i in range(0, len(data), 16):
+        blk = data[i:i+16]
+        dec = _aes128_decrypt_block(blk, rk)
+        out += bytes(a^b for a, b in zip(dec, prev))
+        prev = blk
+    pad = out[-1]
+    return bytes(out[:-pad]) if 1 <= pad <= 16 else bytes(out)
+
+
+# ── Minimal ZIP reader (no stdlib zipfile needed) ─────────────────────────────
+
+def _zip_entries(buf: bytes):
+    eocd = -1
+    for i in range(len(buf) - 22, -1, -1):
+        if buf[i:i+4] == b'PK\x05\x06':
+            eocd = i; break
+    if eocd < 0:
+        raise ValueError("No EOCD record in ZIP")
+    cd_off = struct.unpack_from('<I', buf, eocd+16)[0]
+    num    = struct.unpack_from('<H', buf, eocd+10)[0]
+    entries = []
+    pos = cd_off
+    for _ in range(num):
+        if buf[pos:pos+4] != b'PK\x01\x02': break
+        comp   = struct.unpack_from('<H', buf, pos+10)[0]
+        csz    = struct.unpack_from('<I', buf, pos+20)[0]
+        usz    = struct.unpack_from('<I', buf, pos+24)[0]
+        fn_len = struct.unpack_from('<H', buf, pos+28)[0]
+        ex_len = struct.unpack_from('<H', buf, pos+30)[0]
+        cm_len = struct.unpack_from('<H', buf, pos+32)[0]
+        lh_off = struct.unpack_from('<I', buf, pos+42)[0]
+        name   = buf[pos+46:pos+46+fn_len].decode(errors='replace')
+        entries.append((name, comp, csz, usz, lh_off))
+        pos += 46 + fn_len + ex_len + cm_len
+    return entries
+
+def _extract_entry(buf: bytes, entry) -> bytes:
+    name, comp, csz, usz, lh_off = entry
+    fn_len = struct.unpack_from('<H', buf, lh_off+26)[0]
+    ex_len = struct.unpack_from('<H', buf, lh_off+28)[0]
+    data_off = lh_off + 30 + fn_len + ex_len
+    raw = buf[data_off:data_off+csz]
+    if comp == 0:
+        return raw
+    return zlib.decompress(raw, -15)
+
+
+# ── Battle parser ─────────────────────────────────────────────────────────────
+
+def _parse_battles_from_js(text: str) -> list:
+    results = []
+    id_re = re.compile(r'\bID\s*:\s*(\d{5,})')
+    for m in id_re.finditer(text):
+        battle_id = int(m.group(1))
+        ctx = text[m.start():min(len(text), m.start()+1500)]
+        template_m = re.search(r'DefaultTemplate\s*:\s*(BattleEventDefault\.\w+)', ctx)
+        if template_m is None:
+            continue
+        rounds_m = re.search(r'RoundsToWin\s*:\s*(\d+)', ctx)
+        rounds = int(rounds_m.group(1)) if rounds_m else 3
+        results.append((battle_id, rounds))
+    return results
+
+def parse_all_battles(config_zip_bytes: bytes) -> dict:
+    """Returns {battle_id_str: rounds_int} from the decrypted inner config ZIP."""
+    entries = _zip_entries(config_zip_bytes)
+    js_files = [e for e in entries
+                if e[0].startswith('scripts/features/events') and e[0].endswith('.js')]
+    print(f"    Found {len(js_files)} event JS files")
+    seen = {}
+    for ef in js_files:
+        try:
+            text = _extract_entry(config_zip_bytes, ef).decode('utf-8', errors='replace')
+            for battle_id, rounds in _parse_battles_from_js(text):
+                if battle_id not in seen:
+                    seen[battle_id] = rounds
+        except Exception as e:
+            print(f"    [!] Error parsing {ef[0]}: {e}")
+    return {str(k): v for k, v in sorted(seen.items())}
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    rand = random.randint(1000, 9999)
+    url = BALANCE_URL.format(rand=rand)
+    print(f"[1] Fetching balance: {url}")
+    req = urllib.request.Request(url, headers={"User-Agent": "UnityPlayer/2022.3"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        balance = json.loads(r.read())
+
+    version_str = balance["version"]["cur"]
+    config_url  = balance["version"]["url"]
+    print(f"    Version : {version_str}")
+    print(f"    ZIP URL : {config_url}")
+
+    print(f"[2] Downloading config archive…")
+    req2 = urllib.request.Request(config_url, headers={"User-Agent": "UnityPlayer/2022.3"})
+    with urllib.request.urlopen(req2, timeout=60) as r:
+        outer_zip = r.read()
+    print(f"    Downloaded {len(outer_zip):,} bytes")
+
+    print(f"[3] Finding + decrypting .enc entry…")
+    entries = _zip_entries(outer_zip)
+    enc_entries = [e for e in entries if e[0].endswith('.enc')]
+    if not enc_entries:
+        sys.exit("ERROR: no .enc file found in outer ZIP")
+    enc_entry = min(enc_entries, key=lambda e: len(e[0].split('/')[-1]))
+    print(f"    Entry   : {enc_entry[0]}")
+    enc_data = _extract_entry(outer_zip, enc_entry)
+    inner_zip = aes128_cbc_decrypt(enc_data, AES_KEY, AES_IV)
+    print(f"    Decrypted to {len(inner_zip):,} bytes")
+
+    print(f"[4] Parsing battles from inner config ZIP…")
+    battles = parse_all_battles(inner_zip)
+    print(f"    Found {len(battles)} battle entries")
+
+    out = {
+        "generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "version":   version_str,
+        "battles":   battles,
+    }
+
+    out_path = os.path.normpath(OUT_FILE)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(out, f, indent=2)
+    print(f"[5] Written → {out_path}  ({len(battles)} battles)")
+
+    if battles:
+        sample = list(battles.items())[:5]
+        for bid, r in sample:
+            print(f"    id={bid}  rounds={r}")
+
+
+if __name__ == "__main__":
+    main()
