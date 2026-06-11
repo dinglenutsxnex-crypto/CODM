@@ -167,7 +167,7 @@ class ConnectionViewModel : ViewModel() {
                             }
                         }
                         is GameEvent.BattleCommand -> {
-                            if (event.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight")) {
+                            if (event.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")) {
                                 _currentBattle.postValue(null)
                             }
                             // SF3 opens a NEW TCP connection for event_battle_finish_fight —
@@ -236,7 +236,7 @@ class ConnectionViewModel : ViewModel() {
                 }
             }
             is GameEvent.BattleCommand -> {
-                if (event.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight")) {
+                if (event.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")) {
                     _currentBattle.postValue(null)
                 }
             }

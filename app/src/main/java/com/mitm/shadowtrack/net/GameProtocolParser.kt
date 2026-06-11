@@ -31,11 +31,12 @@ object GameProtocolParser {
         "brawler_start", "brawler_finish", "finish_fight",
         "refresh_battles", "cheat_generate_battle",
         "clan_refresh_battles", "start_fight", "get_battles",
-        "event_battle_start_fight", "event_battle_finish_fight"
+        "event_battle_start_fight", "event_battle_finish_fight",
+        "clan_start_fight", "clan_finish_fight"
     )
 
-    private val BATTLE_START_COMMANDS = setOf("start_fight", "event_battle_start_fight")
-    private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish", "event_battle_finish_fight")
+    private val BATTLE_START_COMMANDS = setOf("start_fight", "event_battle_start_fight", "clan_start_fight")
+    private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")
 
     fun parse(data: ByteArray, direction: LiveMessage.Direction): GameEvent? {
         if (data.size < 3) return null
@@ -65,6 +66,7 @@ object GameProtocolParser {
         if (isOut) {
             val cmd = when {
                 text.contains("event_battle_start_fight") -> "event_battle_start_fight"
+                text.contains("clan_start_fight")         -> "clan_start_fight"
                 text.contains("start_fight")              -> "start_fight"
                 else                                      -> null
             }
@@ -74,7 +76,10 @@ object GameProtocolParser {
             }
         }
 
-        for (cmd in BATTLE_END_COMMANDS) {
+        // Check clan_finish_fight before finish_fight — clan_finish_fight contains "finish_fight"
+        // as a substring so order matters to avoid misclassification.
+        val endCmdOrdered = listOf("clan_finish_fight", "event_battle_finish_fight", "brawler_finish", "finish_fight")
+        for (cmd in endCmdOrdered) {
             if (text.contains(cmd)) {
                 val id = extractIdFromRawText(text)
                 return if (!isOut) GameEvent.WinConfirmed(id ?: "?")
@@ -134,6 +139,57 @@ object GameProtocolParser {
         val battleId = (readProtoFields(params)[1] as? Long)
             ?.takeIf { isBattleIdCandidate(it) } ?: return null
         return battleId to counter
+    }
+
+    /**
+     * Same as [tryExtractFinishFight] but for clan_finish_fight.
+     * Returns Pair(battleId, counter) if [data] is a complete outbound clan_finish_fight frame.
+     * The field layout is identical to event_battle_finish_fight — params.field[1] = battleId.
+     */
+    fun tryExtractClanFinishFight(data: ByteArray): Pair<Long, Long>? {
+        val payload = extractPayload(data) ?: return null
+        val fields  = readProtoFields(payload)
+        val counter = (fields[1] as? Long)?.takeIf { it > 0 } ?: return null
+        val cmd     = (fields[2] as? ByteArray)?.toString(Charsets.UTF_8) ?: return null
+        if (cmd != "clan_finish_fight") return null
+        val params  = fields[3] as? ByteArray ?: return null
+        val battleId = (readProtoFields(params)[1] as? Long)
+            ?.takeIf { isBattleIdCandidate(it) } ?: return null
+        return battleId to counter
+    }
+
+    /**
+     * Parses the server's inbound clan_start_fight response frame and extracts the
+     * number of rounds for the battle.
+     *
+     * Navigation path (confirmed from hammerscale capture):
+     *   outer envelope field[3] (params)
+     *     → field[2] (big inventory/config blob)
+     *       → field[1] (battle config outer, 8575B)
+     *         → field[1] (battle config inner, 7926B)
+     *           → field[10] = rounds (varint, e.g. 2)
+     *
+     * Returns null if [data] is not a clan_start_fight server response, is not fully
+     * parseable, or if the extracted round count is outside the sane range 1–10.
+     */
+    fun extractClanRoundsFromStartResponse(data: ByteArray): Int? {
+        return try {
+            val payload = extractPayload(data) ?: return null
+            val outer   = readProtoFields(payload)
+            // Only fire on inbound clan_start_fight (server echo / response)
+            val cmd = (outer[2] as? ByteArray)?.toString(Charsets.UTF_8) ?: return null
+            if (cmd != "clan_start_fight") return null
+            // Navigate: outer[3] → [2] → [1] → [1] → field[10]
+            val params   = outer[3]  as? ByteArray ?: return null
+            val f3       = readProtoFields(params)
+            val bigBlob  = f3[2]     as? ByteArray ?: return null
+            val f2       = readProtoFields(bigBlob)
+            val cfgOuter = f2[1]     as? ByteArray ?: return null
+            val f1a      = readProtoFields(cfgOuter)
+            val cfgInner = f1a[1]    as? ByteArray ?: return null
+            val f1b      = readProtoFields(cfgInner)
+            (f1b[10] as? Long)?.toInt()?.takeIf { it in 1..10 }
+        } catch (_: Exception) { null }
     }
 
     // ── Framing ───────────────────────────────────────────────────────────

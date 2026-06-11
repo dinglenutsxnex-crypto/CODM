@@ -77,6 +77,30 @@ class TcpHandler(
     /** Disarm without firing (e.g. user cancelled or battle ended without a finish_fight). */
     fun disarmIntercept() { interceptArmed.set(false) }
 
+    // ── Clan battle auto-intercept ────────────────────────────────────────
+    // Auto-armed when the server's clan_start_fight response is sniffed inbound.
+    // Rounds are read directly from the server's battle config (field[10] in the
+    // nested response proto) rather than from any JSON lookup.
+    // When armed, the next outbound clan_finish_fight is patched to WIN (same
+    // surgical approach as the event_battle intercept above).
+    private val clanInterceptArmed  = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val clanInterceptRounds = java.util.concurrent.atomic.AtomicInteger(2)
+
+    /** Disarm the clan intercept without firing. */
+    fun disarmClanIntercept() { clanInterceptArmed.set(false) }
+
+    /**
+     * Called from parseSf3Frames for every INBOUND complete frame.
+     * If [frame] is the server's clan_start_fight response, extracts the round
+     * count and arms the clan intercept so the next outbound clan_finish_fight
+     * is automatically patched to WIN with the correct round value.
+     */
+    private fun sniffClanStart(frame: ByteArray) {
+        val rounds = GameProtocolParser.extractClanRoundsFromStartResponse(frame) ?: return
+        clanInterceptRounds.set(rounds)
+        clanInterceptArmed.set(true)
+    }
+
     fun handlePacket(packet: ParsedPacket) {
         val tcp = packet.tcp ?: return
         val connKey = "${packet.ip.srcAddr.address.joinToString(".")}:${tcp.srcPort}->" +
@@ -188,6 +212,22 @@ class TcpHandler(
                 if (patched == null) {
                     onMessage(connKey, LiveMessage(LiveMessage.Direction.OUTBOUND,
                         "PATCH FAILED: field[4] not found — hex: ${packet.payload.joinToString(" ") { "%02x".format(it) }}".toByteArray()))
+                    return  // do NOT forward the unmodified loss packet
+                }
+                payloadForServer = patched
+            }
+
+            // ── Clan battle auto-intercept ────────────────────────────────
+            // Auto-armed when we sniffed the server's clan_start_fight response
+            // (see parseSf3Frames inbound path). When the game now sends its own
+            // clan_finish_fight, patch field[4]→WIN and set rounds from the value
+            // we captured from the server. No user interaction required.
+            if (clanInterceptArmed.get() && GameProtocolParser.tryExtractClanFinishFight(packet.payload) != null) {
+                clanInterceptArmed.set(false)
+                val patched = PacketInjector.patchFinishFightToWin(packet.payload, clanInterceptRounds.get())
+                if (patched == null) {
+                    onMessage(connKey, LiveMessage(LiveMessage.Direction.OUTBOUND,
+                        "CLAN PATCH FAILED: field[4] not found — hex: ${packet.payload.joinToString(" ") { "%02x".format(it) }}".toByteArray()))
                     return  // do NOT forward the unmodified loss packet
                 }
                 payloadForServer = patched
@@ -414,7 +454,9 @@ class TcpHandler(
                     val len = raw[pos + 1].toInt() and 0xFF
                     if (pos + 2 + len > raw.size) break
                     conn?.inboundResyncBytes = 0
-                    onMessage(connId, LiveMessage(dir, raw.copyOfRange(pos, pos + 2 + len)))
+                    val frame01 = raw.copyOfRange(pos, pos + 2 + len)
+                    onMessage(connId, LiveMessage(dir, frame01))
+                    if (dir == LiveMessage.Direction.INBOUND) sniffClanStart(frame01)
                     pos += 2 + len
                 }
                 0x02 -> {
@@ -436,7 +478,9 @@ class TcpHandler(
                         pos + 5 + compLen > raw.size -> break  // frame not yet complete
                         else -> {
                             conn?.inboundResyncBytes = 0
-                            onMessage(connId, LiveMessage(dir, raw.copyOfRange(pos, pos + 5 + compLen)))
+                            val frame02 = raw.copyOfRange(pos, pos + 5 + compLen)
+                            onMessage(connId, LiveMessage(dir, frame02))
+                            if (dir == LiveMessage.Direction.INBOUND) sniffClanStart(frame02)
                             pos += 5 + compLen
                         }
                     }
