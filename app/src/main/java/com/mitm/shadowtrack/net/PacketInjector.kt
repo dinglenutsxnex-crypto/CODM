@@ -295,26 +295,81 @@ object PacketInjector {
      * Returns null if the frame cannot be parsed (caller logs and drops the patch).
      */
     fun patchBrawlerFinishToWin(data: ByteArray): ByteArray? {
-        if (data.size < 3) return null
-        val rawProto: ByteArray = when (data[0].toInt() and 0xFF) {
-            0x01 -> {
-                val len = data[1].toInt() and 0xFF
-                if (data.size < 2 + len) return null
-                data.copyOfRange(2, 2 + len)
+        // Find the brawler_finish SF3 frame — it may not be at byte 0 if multiple
+        // SF3 frames were coalesced into one TCP segment by the kernel.
+        var pos = 0
+        while (pos < data.size) {
+            val t = data[pos].toInt() and 0xFF
+            when (t) {
+                0x01 -> {
+                    if (pos + 2 > data.size) return null
+                    val len = data[pos + 1].toInt() and 0xFF
+                    if (pos + 2 + len > data.size) return null
+                    val rawProto = data.copyOfRange(pos + 2, pos + 2 + len)
+                    val patched = tryPatchBrawlerProto(rawProto)
+                    if (patched != null) {
+                        val before = data.copyOfRange(0, pos)
+                        val after  = data.copyOfRange(pos + 2 + len, data.size)
+                        return before + patched + after
+                    }
+                    pos += 2 + len
+                }
+                0x02 -> {
+                    if (pos + 5 > data.size) return null
+                    val compLen = ByteBuffer.wrap(data, pos + 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                    if (compLen <= 0 || pos + 5 + compLen > data.size) return null
+                    val rawProto = rawInflate(data.copyOfRange(pos + 5, pos + 5 + compLen)) ?: return null
+                    val patched = tryPatchBrawlerProto(rawProto)
+                    if (patched != null) {
+                        val before = data.copyOfRange(0, pos)
+                        val after  = data.copyOfRange(pos + 5 + compLen, data.size)
+                        return before + patched + after
+                    }
+                    pos += 5 + compLen
+                }
+                else -> pos++
             }
-            0x02 -> {
-                if (data.size < 5) return null
-                val compLen = ByteBuffer.wrap(data, 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
-                if (compLen <= 0 || data.size < 5 + compLen) return null
-                rawInflate(data.copyOfRange(5, 5 + compLen)) ?: return null
-            }
-            else -> return null
         }
+        return null
+    }
 
-        // Parse outer envelope to extract counter (field[1]) and params (field[3])
+    /**
+     * Given a raw (decompressed) SF3 envelope proto that is a brawler_finish,
+     * rebuilds the inner params as a full WIN and returns the re-encoded SF3 frame
+     * (always 0x02 since the WIN proto exceeds 255 bytes). Returns null if this
+     * proto is not a brawler_finish or if the counter cannot be extracted.
+     */
+    private fun tryPatchBrawlerProto(rawProto: ByteArray): ByteArray? {
         var pos = 0
         var counter = -1L
         var paramsBytes: ByteArray? = null
+        // Quick command check before full parse
+        var cmdFound = false
+        var pp = 0
+        while (pp < rawProto.size) {
+            val tr = readVarintAt(rawProto, pp) ?: break
+            val tag = tr.first; pp += tr.second
+            val fieldNum = (tag shr 3).toInt()
+            val wireType = (tag and 7L).toInt()
+            when (wireType) {
+                0 -> { val vr = readVarintAt(rawProto, pp) ?: break; pp += vr.second }
+                2 -> {
+                    val lr = readVarintAt(rawProto, pp) ?: break; pp += lr.second
+                    val len = lr.first.toInt()
+                    if (pp + len > rawProto.size) break
+                    if (fieldNum == 2) {
+                        val cmd = rawProto.copyOfRange(pp, pp + len).toString(Charsets.UTF_8)
+                        if (cmd != "brawler_finish") return null
+                        cmdFound = true
+                    }
+                    pp += len
+                }
+                else -> break
+            }
+        }
+        if (!cmdFound) return null
+
+        // Full parse: extract counter and params
         while (pos < rawProto.size) {
             val tr = readVarintAt(rawProto, pos) ?: break
             val tag = tr.first; pos += tr.second
@@ -339,20 +394,16 @@ object PacketInjector {
         }
         if (counter < 0) return null
 
-        // Preserve field[1] (match info / opponent ID) from the game's original params
         val matchInfo: ByteArray? = paramsBytes?.let { extractBytesField1(it) }
-
-        // Rebuild inner proto with WIN outcome
         val newParams = proto {
             if (matchInfo != null) bytesField(1, matchInfo)
-            varintField(2, 1L)   // result = WIN
-            varintField(3, 2L)   // wonRounds = 2
+            varintField(2, 1L)
+            varintField(3, 2L)
             for (entry in BRAWLER_WIN_ROUND_ENTRIES) bytesField(4, entry)
-            varintField(5, 2L)   // totalRounds = 2
+            varintField(5, 2L)
             bytesField(6, BRAWLER_WIN_ITEMS)
             bytesField(7, BRAWLER_WIN_STATS)
         }
-
         return envelope("brawler_finish", newParams, counter)
     }
 

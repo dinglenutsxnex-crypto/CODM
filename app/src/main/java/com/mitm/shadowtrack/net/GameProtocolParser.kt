@@ -157,10 +157,32 @@ object GameProtocolParser {
      * Used by the brawler WIN intercept in TcpHandler to identify the packet to patch.
      */
     fun tryExtractBrawlerFinish(data: ByteArray): Boolean {
-        val payload = extractPayload(data) ?: return false
-        val fields  = readProtoFields(payload)
-        val cmd     = (fields[2] as? ByteArray)?.toString(Charsets.UTF_8) ?: return false
-        return cmd == "brawler_finish"
+        var pos = 0
+        while (pos < data.size) {
+            val t = data[pos].toInt() and 0xFF
+            when (t) {
+                0x01 -> {
+                    if (pos + 2 > data.size) break
+                    val len = data[pos + 1].toInt() and 0xFF
+                    if (pos + 2 + len > data.size) break
+                    val payload = data.copyOfRange(pos + 2, pos + 2 + len)
+                    val cmd = (readProtoFields(payload)[2] as? ByteArray)?.toString(Charsets.UTF_8)
+                    if (cmd == "brawler_finish") return true
+                    pos += 2 + len
+                }
+                0x02 -> {
+                    if (pos + 5 > data.size) break
+                    val compLen = ByteBuffer.wrap(data, pos + 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                    if (compLen <= 0 || pos + 5 + compLen > data.size) break
+                    val payload = rawDeflate(data.copyOfRange(pos + 5, pos + 5 + compLen)) ?: break
+                    val cmd = (readProtoFields(payload)[2] as? ByteArray)?.toString(Charsets.UTF_8)
+                    if (cmd == "brawler_finish") return true
+                    pos += 5 + compLen
+                }
+                else -> pos++
+            }
+        }
+        return false
     }
 
     /**
