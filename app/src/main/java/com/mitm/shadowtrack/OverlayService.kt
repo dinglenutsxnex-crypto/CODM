@@ -101,9 +101,8 @@ class OverlayService : Service() {
                 overlayView?.findViewById<TextView>(R.id.tv_status_bar)?.text =
                     "${events.size} events  ·  last: ${events.last().timeStr}"
             }
-            if (!isUserMode) {
-                miniView?.findViewById<BlackHoleMiniView>(R.id.black_hole_view)
-                    ?.countText = "${events.size}"
+            miniView?.findViewById<TextView>(R.id.tv_mini_count)?.apply {
+                if (!isUserMode) text = "${events.size}"
             }
         }
     }
@@ -688,9 +687,15 @@ class OverlayService : Service() {
         val view = LayoutInflater.from(this).inflate(R.layout.layout_overlay_mini, null)
         miniView = view
 
-        // Pass event count to the black hole only in dev mode; user mode = pure black hole
-        view.findViewById<BlackHoleMiniView>(R.id.black_hole_view)?.countText =
-            if (isUserMode) null else if (events.isEmpty()) "--" else "${events.size}"
+        view.findViewById<GifView>(R.id.gif_mini)?.setGifResource(R.raw.lexan_effect)
+
+        val miniCountTv = view.findViewById<TextView>(R.id.tv_mini_count)
+        if (isUserMode) {
+            miniCountTv?.visibility = View.GONE
+        } else {
+            miniCountTv?.visibility = View.VISIBLE
+            miniCountTv?.text = if (events.isEmpty()) "--" else "${events.size}"
+        }
 
         val params = makeParams(w = dp(80f), h = dp(80f))
 
