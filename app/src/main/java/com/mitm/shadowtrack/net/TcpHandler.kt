@@ -288,9 +288,13 @@ class TcpHandler(
             conn.outboundQueue.trySend(payloadForServer)
         } else {
             // WS is established — buffer and parse outbound frames (client→server, masked)
-            conn.outboundWsBuffer.write(packet.payload)
+            val wsOut = if (brawlerInterceptArmed.get())
+                tryInterceptBrawlerInWsPayload(connKey, packet.payload)
+            else
+                packet.payload
+            conn.outboundWsBuffer.write(wsOut)
             parseWsFrames(conn.connId, conn.outboundWsBuffer, LiveMessage.Direction.OUTBOUND)
-            conn.outboundQueue.trySend(packet.payload)
+            conn.outboundQueue.trySend(wsOut)
         }
     }
 
