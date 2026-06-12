@@ -185,8 +185,15 @@ class OverlayService : Service() {
                     }
                 }
             }
+            is GameEvent.BrawlerFinished -> {
+                pendingArmJob?.cancel()
+                pendingArmJob = null
+                activeBattleType = BattleType.NONE
+                disarmBattleIntercept()
+                updateUserModeBattleLabels()
+            }
             is GameEvent.BattleCommand -> {
-                if (last.name in setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")) {
+                if (last.name in setOf("finish_fight", "event_battle_finish_fight", "clan_finish_fight")) {
                     pendingArmJob?.cancel()
                     pendingArmJob = null
                     activeBattleType = BattleType.NONE
@@ -816,10 +823,11 @@ class GameEventAdapter(private val items: List<GameEvent>) :
             is GameEvent.HandshakeIn   -> "#58A6FF"
             is GameEvent.LoginOut      -> "#F0883E"
             is GameEvent.LoginIn       -> "#3FB950"
-            is GameEvent.BattleStarted -> "#FF4444"
-            is GameEvent.WinConfirmed  -> "#3FB950"
-            is GameEvent.BattleCommand -> "#D29922"
-            else                       -> "#444C56"
+            is GameEvent.BattleStarted   -> "#FF4444"
+            is GameEvent.WinConfirmed    -> "#3FB950"
+            is GameEvent.BrawlerFinished -> if ((ev as GameEvent.BrawlerFinished).result == "WIN") "#3FB950" else "#F85149"
+            is GameEvent.BattleCommand   -> "#D29922"
+            else                         -> "#444C56"
         }
         val color = Color.parseColor(colorHex)
 

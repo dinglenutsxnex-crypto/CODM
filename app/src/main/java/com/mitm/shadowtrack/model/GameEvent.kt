@@ -22,26 +22,35 @@ sealed class GameEvent {
      */
     data class BattleStarted(val battleId: String, val commandName: String = "start_fight") : GameEvent()
     data class WinConfirmed(val battleId: String) : GameEvent()
+    /**
+     * Fired for outbound brawler_finish packets.
+     * @param result   "WIN" or "LOSS" (inner proto field[2]: 1=WIN, 3=LOSS)
+     * @param wonRounds  inner proto field[3] varint
+     * @param totalRounds inner proto field[5] varint (0 if absent — e.g. on LOSS)
+     */
+    data class BrawlerFinished(val result: String, val wonRounds: Int, val totalRounds: Int) : GameEvent()
 
     val label: String get() = when (this) {
-        is HandshakeOut  -> ">> HANDSHAKE  ${serverName}"
-        is HandshakeIn   -> ">> TOKEN  ${sessionToken.take(20)}..."
-        is LoginOut      -> ">> LOGIN"
-        is LoginIn       -> "<< LOGIN OK"
-        is Command       -> "${if (isOutbound) ">>" else "<<"} ${name}"
-        is BattleCommand -> "${if (isOutbound) ">>" else "<<"} ${name}${if (battleId != null) "  #$battleId" else ""}"
-        is BattleStarted -> "!! BATTLE STARTED  #${battleId}${if (commandName == "event_battle_start_fight") " [FIGHT]" else " [clan]"}"
-        is WinConfirmed  -> "## WIN CONFIRMED  #${battleId}"
+        is HandshakeOut    -> ">> HANDSHAKE  ${serverName}"
+        is HandshakeIn     -> ">> TOKEN  ${sessionToken.take(20)}..."
+        is LoginOut        -> ">> LOGIN"
+        is LoginIn         -> "<< LOGIN OK"
+        is Command         -> "${if (isOutbound) ">>" else "<<"} ${name}"
+        is BattleCommand   -> "${if (isOutbound) ">>" else "<<"} ${name}${if (battleId != null) "  #$battleId" else ""}"
+        is BattleStarted   -> "!! BATTLE STARTED  #${battleId}${if (commandName == "event_battle_start_fight") " [FIGHT]" else " [clan]"}"
+        is WinConfirmed    -> "## WIN CONFIRMED  #${battleId}"
+        is BrawlerFinished -> ">> BRAWLER FINISH  ${result}  ${wonRounds}/${totalRounds}"
     }
 
     val detail: String get() = when (this) {
-        is HandshakeOut  -> ""
-        is HandshakeIn   -> ""
-        is LoginOut      -> "guid: ${guid.take(18)}...\npass: ${password}"
-        is LoginIn       -> ""
-        is Command       -> ""
-        is BattleCommand -> if (battleId != null) "battle: $battleId" else ""
-        is BattleStarted -> "battle_id: ${battleId}"
-        is WinConfirmed  -> "battle_id: ${battleId}  /  server confirmed"
+        is HandshakeOut    -> ""
+        is HandshakeIn     -> ""
+        is LoginOut        -> "guid: ${guid.take(18)}...\npass: ${password}"
+        is LoginIn         -> ""
+        is Command         -> ""
+        is BattleCommand   -> if (battleId != null) "battle: $battleId" else ""
+        is BattleStarted   -> "battle_id: ${battleId}"
+        is WinConfirmed    -> "battle_id: ${battleId}  /  server confirmed"
+        is BrawlerFinished -> "result: ${result}  wonRounds: ${wonRounds}  totalRounds: ${totalRounds}"
     }
 }

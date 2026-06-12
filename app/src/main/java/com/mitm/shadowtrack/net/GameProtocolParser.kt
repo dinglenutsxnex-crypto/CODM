@@ -272,6 +272,10 @@ object GameProtocolParser {
                 GameEvent.Command(command, false)
             }
 
+            command == "brawler_finish" && isOut -> {
+                parseBrawlerFinish(params)
+            }
+
             command in BATTLE_END_COMMANDS && isOut -> {
                 val battleId = params?.let { extractBattleIdDirect(it) }
                 GameEvent.BattleCommand(command, battleId, true)
@@ -307,6 +311,43 @@ object GameProtocolParser {
             }
 
             else -> GameEvent.Command(command, isOut)
+        }
+    }
+
+    // ── Brawler finish extraction ─────────────────────────────────────────
+
+    /**
+     * Parses an outbound brawler_finish params blob and returns a [GameEvent.BrawlerFinished].
+     *
+     * brawler_finish inner proto (confirmed from captured win + loss packets):
+     *   field[1] bytes  = match info (opponent name/ID, round health events) — NOT a battle ID
+     *   field[2] varint = result  1=WIN  3=LOSS
+     *   field[3] varint = wonRounds   (2 on WIN / 1 on LOSS even when 0 rounds won)
+     *   field[4] bytes  = round outcome entries (repeated; only present on WIN)
+     *   field[5] varint = totalRounds (2 on WIN / absent on LOSS → defaults to 0)
+     *   field[6] bytes  = equipped items (full on WIN / empty on LOSS)
+     *   field[7] bytes  = fight stats   (54 bytes on WIN / 2 garbage bytes on LOSS)
+     *
+     * Frame type note: WIN is 0x02 (compressed, ~388B), LOSS is 0x01 (plain, ~189B).
+     * The canonical check is field[2] in the inner proto, not the frame byte.
+     *
+     * Falls back to [GameEvent.BattleCommand] if params are null or unparseable.
+     */
+    private fun parseBrawlerFinish(params: ByteArray?): GameEvent {
+        if (params == null) return GameEvent.BattleCommand("brawler_finish", null, true)
+        return try {
+            val inner = readProtoFields(params)
+            val resultCode  = (inner[2] as? Long)?.toInt() ?: -1
+            val wonRounds   = (inner[3] as? Long)?.toInt() ?: 0
+            val totalRounds = (inner[5] as? Long)?.toInt() ?: 0
+            val result = when (resultCode) {
+                1    -> "WIN"
+                3    -> "LOSS"
+                else -> "RESULT_$resultCode"
+            }
+            GameEvent.BrawlerFinished(result, wonRounds, totalRounds)
+        } catch (_: Exception) {
+            GameEvent.BattleCommand("brawler_finish", null, true)
         }
     }
 
