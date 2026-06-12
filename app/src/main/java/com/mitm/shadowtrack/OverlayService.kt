@@ -141,16 +141,11 @@ class OverlayService : Service() {
     private val raidFightObserver = Observer<Boolean> { active ->
         val wasArmed = raidInterceptArmed   // capture before updateRaidPanel resets it
         updateRaidPanel(active)
-        if (isUserMode) {
-            updateUserModeRaidLabel(active)
-            if (active && userRaidEnabled && !raidInterceptArmed) {
-                // Auto-arm when raid starts if toggle is ON
-                raidInterceptArmed = true
-                TrafficVpnService.instance?.armRaidIntercept()
-            } else if (!active && wasArmed) {
-                // Raid ended with our intercept armed → server accepted max damage
-                flashLabelGreen(R.id.tv_label_raid)
-            }
+        updateUserModeRaidLabel(active)
+        if (active && userRaidEnabled) {
+            armRaid()                       // same pipeline as the button
+        } else if (!active && wasArmed && isUserMode) {
+            flashLabelGreen(R.id.tv_label_raid)
         }
     }
 
@@ -161,33 +156,28 @@ class OverlayService : Service() {
             is GameEvent.BattleStarted -> {
                 activeBattleType = if (last.commandName == "event_battle_start_fight")
                     BattleType.EVENT else BattleType.CLAN
-                if (isUserMode) updateUserModeBattleLabels()
+                updateUserModeBattleLabels()
 
                 val shouldArm = (activeBattleType == BattleType.EVENT && userEventBattleEnabled) ||
                                 (activeBattleType == BattleType.CLAN  && userClanBattleEnabled)
-
-                if (shouldArm && !interceptIsArmed) {
-                    // Delay 3 s so BattleConfig / clan server response can update roundsToWin
-                    // before we commit to the arm.  Job is cancelled if the battle ends first.
+                if (shouldArm) {
+                    // Delay 3 s so BattleConfig / clan server response can settle roundsToWin
+                    // then call the exact same function the button calls.
                     pendingArmJob?.cancel()
-                    pendingArmJob = serviceScope.launch {
+                    pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                         delay(3_000)
-                        if (!interceptIsArmed) {
-                            interceptIsArmed = true
-                            TrafficVpnService.instance?.armIntercept(roundsToWin)
-                        }
+                        armBattleIntercept()    // same pipeline as the button
                     }
                 }
             }
             is GameEvent.WinConfirmed -> {
-                val typeWon = activeBattleType  // capture before reset
+                val typeWon = activeBattleType
                 pendingArmJob?.cancel()
                 pendingArmJob = null
                 activeBattleType = BattleType.NONE
-                interceptIsArmed = false
+                disarmBattleIntercept()         // same pipeline as the button
+                updateUserModeBattleLabels()
                 if (isUserMode) {
-                    updateUserModeBattleLabels()
-                    // Flash the relevant label green for 2 s — server confirmed our win
                     when (typeWon) {
                         BattleType.EVENT -> flashLabelGreen(R.id.tv_label_event_battle)
                         BattleType.CLAN  -> flashLabelGreen(R.id.tv_label_clan_battle)
@@ -200,8 +190,8 @@ class OverlayService : Service() {
                     pendingArmJob?.cancel()
                     pendingArmJob = null
                     activeBattleType = BattleType.NONE
-                    interceptIsArmed = false
-                    if (isUserMode) updateUserModeBattleLabels()
+                    disarmBattleIntercept()     // same pipeline as the button
+                    updateUserModeBattleLabels()
                 }
             }
             else -> {}
@@ -237,6 +227,40 @@ class OverlayService : Service() {
         val v = overlayView ?: return
         val tvRaid = v.findViewById<TextView>(R.id.tv_label_raid) ?: return
         tvRaid.setTextColor(if (raidActive) labelColorActive else labelColorNormal)
+    }
+
+    // ── Shared intercept pipeline ─────────────────────────────────────────
+    // Single source of truth — both dev-mode buttons and user-mode auto-arm
+    // call these. No duplicated logic.
+
+    private fun armBattleIntercept() {
+        if (interceptIsArmed) return
+        val vpn = TrafficVpnService.instance ?: return
+        interceptIsArmed = true
+        vpn.armIntercept(roundsToWin)
+        updateEventsPanel()
+    }
+
+    private fun disarmBattleIntercept() {
+        if (!interceptIsArmed) return
+        interceptIsArmed = false
+        TrafficVpnService.instance?.disarmIntercept()
+        updateEventsPanel()
+    }
+
+    private fun armRaid() {
+        if (raidInterceptArmed) return
+        val vpn = TrafficVpnService.instance ?: return
+        raidInterceptArmed = true
+        vpn.armRaidIntercept()
+        updateRaidPanel(true)
+    }
+
+    private fun disarmRaid() {
+        if (!raidInterceptArmed) return
+        raidInterceptArmed = false
+        TrafficVpnService.instance?.disarmRaidIntercept()
+        updateRaidPanel(AppState.viewModel.raidFightActive.value == true)
     }
 
     // ── Green flash helper (user-mode server-confirm feedback) ────────────
@@ -561,43 +585,28 @@ class OverlayService : Service() {
 
         // ── ARM MAX DMG button (raid intercept) ──────────────────────────
         view.findViewById<TextView>(R.id.btn_raid_max_dmg)?.setOnClickListener {
-            val armStatus = view.findViewById<TextView>(R.id.tv_raid_arm_status)
-            val vpnInstance = TrafficVpnService.instance
-            if (vpnInstance == null) {
-                armStatus?.text = "✗ FAIL: VPN not running"
-                armStatus?.setTextColor(Color.parseColor("#FFFF4444"))
-                armStatus?.visibility = View.VISIBLE
+            if (TrafficVpnService.instance == null) {
+                view.findViewById<TextView>(R.id.tv_raid_arm_status)?.apply {
+                    text = "✗ FAIL: VPN not running"
+                    setTextColor(Color.parseColor("#FFFF4444"))
+                    visibility = View.VISIBLE
+                }
                 return@setOnClickListener
             }
-            if (raidInterceptArmed) {
-                raidInterceptArmed = false
-                vpnInstance.disarmRaidIntercept()
-            } else {
-                raidInterceptArmed = true
-                vpnInstance.armRaidIntercept()
-            }
-            updateRaidPanel(AppState.viewModel.raidFightActive.value == true)
+            if (raidInterceptArmed) disarmRaid() else armRaid()
         }
 
         // ── ARM WIN button ────────────────────────────────────────────────
         view.findViewById<TextView>(R.id.btn_win_battle).setOnClickListener {
-            val winStatus = view.findViewById<TextView>(R.id.tv_win_status)
-            val vpnInstance = TrafficVpnService.instance
-            if (vpnInstance == null) {
-                winStatus.text = "✗ FAIL: VPN not running"
-                winStatus.setTextColor(Color.parseColor("#FFFF4444"))
-                winStatus.visibility = View.VISIBLE
+            if (TrafficVpnService.instance == null) {
+                view.findViewById<TextView>(R.id.tv_win_status)?.apply {
+                    text = "✗ FAIL: VPN not running"
+                    setTextColor(Color.parseColor("#FFFF4444"))
+                    visibility = View.VISIBLE
+                }
                 return@setOnClickListener
             }
-            if (interceptIsArmed) {
-                interceptIsArmed = false
-                vpnInstance.disarmIntercept()
-                updateEventsPanel()
-            } else {
-                interceptIsArmed = true
-                vpnInstance.armIntercept(roundsToWin)
-                updateEventsPanel()
-            }
+            if (interceptIsArmed) disarmBattleIntercept() else armBattleIntercept()
         }
 
         // ── User mode switches ────────────────────────────────────────────
@@ -617,67 +626,44 @@ class OverlayService : Service() {
 
         swEvent.setOnCheckedChangeListener { _, checked ->
             userEventBattleEnabled = checked
-            val vpn = TrafficVpnService.instance
             if (checked) {
-                // Battle already active — schedule delayed arm so rounds are settled
-                if (activeBattleType == BattleType.EVENT && !interceptIsArmed && vpn != null) {
+                if (activeBattleType == BattleType.EVENT) {
                     pendingArmJob?.cancel()
-                    pendingArmJob = serviceScope.launch {
+                    pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                         delay(3_000)
-                        if (!interceptIsArmed) {
-                            interceptIsArmed = true
-                            TrafficVpnService.instance?.armIntercept(roundsToWin)
-                        }
+                        armBattleIntercept()
                     }
                 }
             } else {
                 pendingArmJob?.cancel()
                 pendingArmJob = null
-                if (interceptIsArmed && activeBattleType == BattleType.EVENT) {
-                    interceptIsArmed = false
-                    vpn?.disarmIntercept()
-                }
+                if (activeBattleType == BattleType.EVENT) disarmBattleIntercept()
             }
         }
 
         swClan.setOnCheckedChangeListener { _, checked ->
             userClanBattleEnabled = checked
-            val vpn = TrafficVpnService.instance
             if (checked) {
-                if (activeBattleType == BattleType.CLAN && !interceptIsArmed && vpn != null) {
+                if (activeBattleType == BattleType.CLAN) {
                     pendingArmJob?.cancel()
-                    pendingArmJob = serviceScope.launch {
+                    pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                         delay(3_000)
-                        if (!interceptIsArmed) {
-                            interceptIsArmed = true
-                            TrafficVpnService.instance?.armIntercept(roundsToWin)
-                        }
+                        armBattleIntercept()
                     }
                 }
             } else {
                 pendingArmJob?.cancel()
                 pendingArmJob = null
-                if (interceptIsArmed && activeBattleType == BattleType.CLAN) {
-                    interceptIsArmed = false
-                    vpn?.disarmIntercept()
-                }
+                if (activeBattleType == BattleType.CLAN) disarmBattleIntercept()
             }
         }
 
         swRaid.setOnCheckedChangeListener { _, checked ->
             userRaidEnabled = checked
-            val vpn = TrafficVpnService.instance
-            if (checked) {
-                // Auto-arm immediately if a raid is already active
-                if (AppState.viewModel.raidFightActive.value == true && !raidInterceptArmed && vpn != null) {
-                    raidInterceptArmed = true
-                    vpn.armRaidIntercept()
-                }
-            } else {
-                if (raidInterceptArmed) {
-                    raidInterceptArmed = false
-                    vpn?.disarmRaidIntercept()
-                }
+            if (checked && AppState.viewModel.raidFightActive.value == true) {
+                armRaid()
+            } else if (!checked) {
+                disarmRaid()
             }
         }
 
