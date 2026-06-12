@@ -7,22 +7,38 @@
     android:clickable="true"
     android:focusable="true">
 
+    <!-- Layer 1 (bottom): [HS] text — sits BEHIND the GIF so the cyan effect sweeps over it -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="22dp"
+        android:text="[ HS ]"
+        android:textColor="#7700AABB"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:fontFamily="monospace"
+        android:letterSpacing="0.08" />
+
+    <!-- Layer 2 (middle): animated GIF with luma-keyed transparency -->
     <com.mitm.shadowtrack.GifView
         android:id="@+id/gif_mini"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Dev mode only: event count shown over the GIF -->
+    <!-- Layer 3 (top): event count — dev mode only, above the GIF, bright green -->
     <TextView
         android:id="@+id/tv_mini_count"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="center"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="22dp"
         android:text="--"
-        android:textColor="#CC39FF14"
+        android:textColor="#FF39FF14"
         android:textSize="10sp"
         android:textStyle="bold"
         android:fontFamily="monospace"
-        android:gravity="center" />
+        android:gravity="center"
+        android:visibility="gone" />
 
 </FrameLayout>
