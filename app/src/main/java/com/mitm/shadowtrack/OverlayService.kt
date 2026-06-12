@@ -712,12 +712,6 @@ class OverlayService : Service() {
         styleSwitch(swRaid)
         styleSwitch(swBrawler)
 
-        // ── Make the whole row clickable for each switch ────────────────
-        view.findViewById<View>(R.id.row_event_battle)?.setOnClickListener { swEvent.performClick() }
-        view.findViewById<View>(R.id.row_clan_battle)?.setOnClickListener { swClan.performClick() }
-        view.findViewById<View>(R.id.row_brawler)?.setOnClickListener { swBrawler.performClick() }
-        view.findViewById<View>(R.id.row_raid)?.setOnClickListener { swRaid.performClick() }
-
         // Restore session state BEFORE attaching listeners so setting isChecked
         // doesn't fire the callbacks and trigger spurious arm/disarm calls.
         swEvent.isChecked   = userEventBattleEnabled
