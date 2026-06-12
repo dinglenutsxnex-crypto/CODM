@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.Deflater
+import java.util.zip.Inflater
 
 /**
  * Builds SF3 wire-format packets for injection.
@@ -29,6 +30,33 @@ import java.util.zip.Deflater
  *   field[14] varint = 28      player level (absent in loss)
  */
 object PacketInjector {
+
+    // ── Brawler WIN constants (verified from user_137.3.bin WIN capture) ─────
+    // Items:  4 equipped items (IDs 1617, 1618, 6617, 6620; levels 1, 1, 2, 2)
+    // Stats:  54-byte fight stats from the real brawler WIN packet
+    // Rounds: 5 round sub-messages from brawler WIN inner proto field[4]
+    private val BRAWLER_WIN_ITEMS = byteArrayOf(
+        0x0a, 0x05, 0x08, 0xd1.toByte(), 0x0c, 0x10, 0x01,
+        0x0a, 0x05, 0x08, 0xd2.toByte(), 0x0c, 0x10, 0x01,
+        0x0a, 0x05, 0x08, 0xd9.toByte(), 0x34, 0x10, 0x02,
+        0x0a, 0x05, 0x08, 0xdc.toByte(), 0x34, 0x10, 0x02
+    )
+    private val BRAWLER_WIN_STATS = byteArrayOf(
+        0x08, 0x02, 0x10, 0x1f, 0x1a, 0x02, 0x01, 0x01,
+        0x22, 0x02, 0x09, 0x05, 0x2a, 0x02, 0x01, 0x01,
+        0x32, 0x08, 0x00, 0x00, 0x80.toByte(), 0x3f, 0x00, 0x00, 0x80.toByte(), 0x3f,
+        0x3a, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x42, 0x08, 0x66, 0x66, 0xe6.toByte(), 0x3e, 0x66, 0x66, 0xe6.toByte(), 0x3e,
+        0x4a, 0x02, 0x03, 0x03, 0x52, 0x02, 0x00, 0x00
+    )
+    // 5 round entries for inner proto field[4] (repeated bytes sub-messages)
+    private val BRAWLER_WIN_ROUND_ENTRIES = arrayOf(
+        byteArrayOf(0x08, 0x03, 0x10, 0x01),
+        byteArrayOf(0x08, 0x04, 0x10, 0x02),
+        byteArrayOf(0x08, 0x05, 0x10, 0x03),
+        byteArrayOf(0x08, 0x06, 0x10, 0x02),
+        byteArrayOf(0x08, 0x07)
+    )
 
     // ── WIN constants from 3002601_battle_win / user_194.7.bin ───────────────
     // Items:  two equipped items, IDs 1617 + 1618, both level 4
@@ -246,6 +274,139 @@ object PacketInjector {
         }
         return null
     }
+
+    /**
+     * Rebuilds the game's own brawler_finish packet so the server records a WIN.
+     *
+     * Unlike patchFinishFightToWin (surgical byte-flip), brawler_finish requires a
+     * FULL inner-proto rebuild because WIN and LOSS have completely different field
+     * sets: WIN has fields 1–7 (including 5 round entries in field[4]); LOSS is
+     * missing fields 4, 5, and 6.
+     *
+     * Steps:
+     *   1. Decode the game's frame (0x01 or 0x02) → extract outer counter + params.field[1]
+     *      (match info bytes that identify the opponent — kept so the server can resolve
+     *      the correct PvP session).
+     *   2. Rebuild inner proto: field[1]=matchInfo, field[2]=1 (WIN), field[3]=2 (wonRounds),
+     *      five field[4] round entries, field[5]=2 (totalRounds), field[6]=BRAWLER_WIN_ITEMS,
+     *      field[7]=BRAWLER_WIN_STATS.
+     *   3. Re-encode as 0x02 frame (always; the rebuilt WIN proto is always > 255 bytes).
+     *
+     * Returns null if the frame cannot be parsed (caller logs and drops the patch).
+     */
+    fun patchBrawlerFinishToWin(data: ByteArray): ByteArray? {
+        if (data.size < 3) return null
+        val rawProto: ByteArray = when (data[0].toInt() and 0xFF) {
+            0x01 -> {
+                val len = data[1].toInt() and 0xFF
+                if (data.size < 2 + len) return null
+                data.copyOfRange(2, 2 + len)
+            }
+            0x02 -> {
+                if (data.size < 5) return null
+                val compLen = ByteBuffer.wrap(data, 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                if (compLen <= 0 || data.size < 5 + compLen) return null
+                rawInflate(data.copyOfRange(5, 5 + compLen)) ?: return null
+            }
+            else -> return null
+        }
+
+        // Parse outer envelope to extract counter (field[1]) and params (field[3])
+        var pos = 0
+        var counter = -1L
+        var paramsBytes: ByteArray? = null
+        while (pos < rawProto.size) {
+            val tr = readVarintAt(rawProto, pos) ?: break
+            val tag = tr.first; pos += tr.second
+            val fieldNum = (tag shr 3).toInt()
+            val wireType = (tag and 7L).toInt()
+            when (wireType) {
+                0 -> {
+                    val vr = readVarintAt(rawProto, pos) ?: break
+                    if (fieldNum == 1) counter = vr.first
+                    pos += vr.second
+                }
+                2 -> {
+                    val lr = readVarintAt(rawProto, pos) ?: break
+                    pos += lr.second
+                    val len = lr.first.toInt()
+                    if (pos + len > rawProto.size) break
+                    if (fieldNum == 3) paramsBytes = rawProto.copyOfRange(pos, pos + len)
+                    pos += len
+                }
+                else -> break
+            }
+        }
+        if (counter < 0) return null
+
+        // Preserve field[1] (match info / opponent ID) from the game's original params
+        val matchInfo: ByteArray? = paramsBytes?.let { extractBytesField1(it) }
+
+        // Rebuild inner proto with WIN outcome
+        val newParams = proto {
+            if (matchInfo != null) bytesField(1, matchInfo)
+            varintField(2, 1L)   // result = WIN
+            varintField(3, 2L)   // wonRounds = 2
+            for (entry in BRAWLER_WIN_ROUND_ENTRIES) bytesField(4, entry)
+            varintField(5, 2L)   // totalRounds = 2
+            bytesField(6, BRAWLER_WIN_ITEMS)
+            bytesField(7, BRAWLER_WIN_STATS)
+        }
+
+        return envelope("brawler_finish", newParams, counter)
+    }
+
+    /** Extract the first field[1] bytes value from a proto blob; null on parse failure. */
+    private fun extractBytesField1(data: ByteArray): ByteArray? {
+        var pos = 0
+        while (pos < data.size) {
+            val tr = readVarintAt(data, pos) ?: return null
+            val tag = tr.first; pos += tr.second
+            val fieldNum = (tag shr 3).toInt()
+            val wireType = (tag and 7L).toInt()
+            when (wireType) {
+                0 -> { val vr = readVarintAt(data, pos) ?: return null; pos += vr.second }
+                2 -> {
+                    val lr = readVarintAt(data, pos) ?: return null
+                    pos += lr.second
+                    val len = lr.first.toInt()
+                    if (pos + len > data.size) return null
+                    if (fieldNum == 1) return data.copyOfRange(pos, pos + len)
+                    pos += len
+                }
+                else -> return null
+            }
+        }
+        return null
+    }
+
+    /** Read a varint from [data] at [start]; returns (value, bytesConsumed) or null. */
+    private fun readVarintAt(data: ByteArray, start: Int): Pair<Long, Int>? {
+        var value = 0L; var shift = 0; var i = start
+        while (i < data.size) {
+            val b = data[i++].toInt() and 0xFF
+            value = value or ((b and 0x7F).toLong() shl shift)
+            if (b and 0x80 == 0) return value to (i - start)
+            shift += 7
+            if (shift >= 64) break
+        }
+        return null
+    }
+
+    /** Raw inflate (windowBits = -15, no zlib header). Mirrors rawDeflate. */
+    private fun rawInflate(data: ByteArray): ByteArray? = try {
+        val inflater = Inflater(true)
+        inflater.setInput(data)
+        val out = ByteArrayOutputStream(data.size * 4)
+        val buf = ByteArray(8192)
+        while (!inflater.finished()) {
+            val n = inflater.inflate(buf)
+            if (n > 0) out.write(buf, 0, n)
+            else if (inflater.needsInput()) break
+        }
+        inflater.end()
+        out.toByteArray().takeIf { it.isNotEmpty() }
+    } catch (_: Exception) { null }
 
     // ── Proto writer ──────────────────────────────────────────────────────
 

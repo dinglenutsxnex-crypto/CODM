@@ -153,6 +153,17 @@ object GameProtocolParser {
     }
 
     /**
+     * Returns true if [data] is a complete outbound brawler_finish SF3 frame.
+     * Used by the brawler WIN intercept in TcpHandler to identify the packet to patch.
+     */
+    fun tryExtractBrawlerFinish(data: ByteArray): Boolean {
+        val payload = extractPayload(data) ?: return false
+        val fields  = readProtoFields(payload)
+        val cmd     = (fields[2] as? ByteArray)?.toString(Charsets.UTF_8) ?: return false
+        return cmd == "brawler_finish"
+    }
+
+    /**
      * Same as [tryExtractFinishFight] but for clan_finish_fight.
      * Returns Pair(battleId, counter) if [data] is a complete outbound clan_finish_fight frame.
      * The field layout is identical to event_battle_finish_fight — params.field[1] = battleId.

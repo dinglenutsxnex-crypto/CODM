@@ -44,8 +44,10 @@ class OverlayService : Service() {
     private var currentBattleId: String? = null
     private var lastWinConfirmedId: String? = null
 
-    private var interceptIsArmed = false
-    private var raidInterceptArmed = false
+    private var interceptIsArmed    = false
+    private var raidInterceptArmed  = false
+    private var brawlerInterceptArmed = false
+    private var brawlerBattleActive   = false
 
     private var roundsToWin: Int = 3
     private var autoSetBattleId: String? = null
@@ -68,6 +70,7 @@ class OverlayService : Service() {
     private var userEventBattleEnabled = false
     private var userClanBattleEnabled  = false
     private var userRaidEnabled        = false
+    private var userBrawlerEnabled     = false
 
     // Normal label color for user-mode toggles
     private val labelColorNormal = Color.parseColor("#FFE6EDF3")
@@ -186,6 +189,12 @@ class OverlayService : Service() {
                 }
             }
             is GameEvent.BrawlerFinished -> {
+                val wasWin = last.result == "WIN"
+                brawlerBattleActive = false
+                disarmBrawlerIntercept()
+                updateBrawlerPanel()
+                updateUserModeBrawlerLabel()
+                if (isUserMode && userBrawlerEnabled && wasWin) flashLabelGreen(R.id.tv_label_brawler)
                 pendingArmJob?.cancel()
                 pendingArmJob = null
                 activeBattleType = BattleType.NONE
@@ -197,8 +206,26 @@ class OverlayService : Service() {
                     pendingArmJob?.cancel()
                     pendingArmJob = null
                     activeBattleType = BattleType.NONE
-                    disarmBattleIntercept()     // same pipeline as the button
+                    disarmBattleIntercept()
                     updateUserModeBattleLabels()
+                }
+                if (last.name == "brawler_start" && last.isOutbound) {
+                    brawlerBattleActive = true
+                    updateBrawlerPanel()
+                    updateUserModeBrawlerLabel()
+                    if (userBrawlerEnabled) {
+                        pendingArmJob?.cancel()
+                        pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                            delay(3_000)
+                            armBrawlerIntercept()
+                        }
+                    }
+                }
+                if (last.name == "brawler_finish" && last.isOutbound) {
+                    brawlerBattleActive = false
+                    disarmBrawlerIntercept()
+                    updateBrawlerPanel()
+                    updateUserModeBrawlerLabel()
                 }
             }
             else -> {}
@@ -236,6 +263,48 @@ class OverlayService : Service() {
         tvRaid.setTextColor(if (raidActive) labelColorActive else labelColorNormal)
     }
 
+    private fun updateUserModeBrawlerLabel() {
+        val tv = overlayView?.findViewById<TextView>(R.id.tv_label_brawler) ?: return
+        tv.setTextColor(if (brawlerBattleActive) labelColorActive else labelColorNormal)
+    }
+
+    private fun updateBrawlerPanel() {
+        val v         = overlayView ?: return
+        val statusTv  = v.findViewById<TextView>(R.id.tv_brawler_status)    ?: return
+        val btn       = v.findViewById<TextView>(R.id.btn_brawler_win)       ?: return
+        val armStatus = v.findViewById<TextView>(R.id.tv_brawler_arm_status) ?: return
+
+        if (!brawlerBattleActive) {
+            if (brawlerInterceptArmed) {
+                brawlerInterceptArmed = false
+                TrafficVpnService.instance?.disarmBrawlerIntercept()
+            }
+            statusTv.text = "NO ACTIVE BRAWLER"
+            statusTv.setTextColor(Color.parseColor("#FF8B949E"))
+            btn.visibility = View.GONE
+            armStatus.visibility = View.GONE
+            return
+        }
+
+        statusTv.text = "BRAWLER FIGHT ACTIVE"
+        statusTv.setTextColor(Color.parseColor("#FF3FB950"))
+        btn.visibility = View.VISIBLE
+
+        if (brawlerInterceptArmed) {
+            btn.text = "⚡ ARMED — play to fight end"
+            btn.setTextColor(Color.parseColor("#FF0D1117"))
+            btn.setBackgroundColor(Color.parseColor("#FFD29922"))
+            armStatus.text = "brawler_finish → patched to WIN"
+            armStatus.setTextColor(Color.parseColor("#FFD29922"))
+            armStatus.visibility = View.VISIBLE
+        } else {
+            btn.text = "ARM BRAWLER WIN"
+            btn.setTextColor(Color.parseColor("#FF0D1117"))
+            btn.setBackgroundColor(Color.parseColor("#FF58A6FF"))
+            armStatus.visibility = View.GONE
+        }
+    }
+
     // ── Shared intercept pipeline ─────────────────────────────────────────
     // Single source of truth — both dev-mode buttons and user-mode auto-arm
     // call these. No duplicated logic.
@@ -268,6 +337,21 @@ class OverlayService : Service() {
         raidInterceptArmed = false
         TrafficVpnService.instance?.disarmRaidIntercept()
         updateRaidPanel(AppState.viewModel.raidFightActive.value == true)
+    }
+
+    private fun armBrawlerIntercept() {
+        if (brawlerInterceptArmed) return
+        val vpn = TrafficVpnService.instance ?: return
+        brawlerInterceptArmed = true
+        vpn.armBrawlerIntercept()
+        updateBrawlerPanel()
+    }
+
+    private fun disarmBrawlerIntercept() {
+        if (!brawlerInterceptArmed) return
+        brawlerInterceptArmed = false
+        TrafficVpnService.instance?.disarmBrawlerIntercept()
+        updateBrawlerPanel()
     }
 
     // ── Green flash helper (user-mode server-confirm feedback) ────────────
@@ -486,6 +570,7 @@ class OverlayService : Service() {
             // Refresh label colors for current states
             updateUserModeBattleLabels()
             updateUserModeRaidLabel(AppState.viewModel.raidFightActive.value == true)
+            updateUserModeBrawlerLabel()
         } else {
             tabRow?.visibility      = View.VISIBLE
             // rv_events visible only when logs tab is active — restore logs tab as default
@@ -617,19 +702,22 @@ class OverlayService : Service() {
         }
 
         // ── User mode switches ────────────────────────────────────────────
-        val swEvent = view.findViewById<Switch>(R.id.sw_event_battle)
-        val swClan  = view.findViewById<Switch>(R.id.sw_clan_battle)
-        val swRaid  = view.findViewById<Switch>(R.id.sw_raid)
+        val swEvent   = view.findViewById<Switch>(R.id.sw_event_battle)
+        val swClan    = view.findViewById<Switch>(R.id.sw_clan_battle)
+        val swRaid    = view.findViewById<Switch>(R.id.sw_raid)
+        val swBrawler = view.findViewById<Switch>(R.id.sw_brawler)
 
         styleSwitch(swEvent)
         styleSwitch(swClan)
         styleSwitch(swRaid)
+        styleSwitch(swBrawler)
 
         // Restore session state BEFORE attaching listeners so setting isChecked
         // doesn't fire the callbacks and trigger spurious arm/disarm calls.
-        swEvent.isChecked = userEventBattleEnabled
-        swClan.isChecked  = userClanBattleEnabled
-        swRaid.isChecked  = userRaidEnabled
+        swEvent.isChecked   = userEventBattleEnabled
+        swClan.isChecked    = userClanBattleEnabled
+        swRaid.isChecked    = userRaidEnabled
+        swBrawler.isChecked = userBrawlerEnabled
 
         swEvent.setOnCheckedChangeListener { _, checked ->
             userEventBattleEnabled = checked
@@ -672,6 +760,34 @@ class OverlayService : Service() {
             } else if (!checked) {
                 disarmRaid()
             }
+        }
+
+        swBrawler.setOnCheckedChangeListener { _, checked ->
+            userBrawlerEnabled = checked
+            if (checked && brawlerBattleActive) {
+                pendingArmJob?.cancel()
+                pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                    delay(3_000)
+                    armBrawlerIntercept()
+                }
+            } else if (!checked) {
+                pendingArmJob?.cancel()
+                pendingArmJob = null
+                disarmBrawlerIntercept()
+            }
+        }
+
+        // ── ARM BRAWLER WIN button (dev mode brawler intercept) ──────────
+        view.findViewById<TextView>(R.id.btn_brawler_win)?.setOnClickListener {
+            if (TrafficVpnService.instance == null) {
+                view.findViewById<TextView>(R.id.tv_brawler_arm_status)?.apply {
+                    text = "✗ FAIL: VPN not running"
+                    setTextColor(Color.parseColor("#FFFF4444"))
+                    visibility = View.VISIBLE
+                }
+                return@setOnClickListener
+            }
+            if (brawlerInterceptArmed) disarmBrawlerIntercept() else armBrawlerIntercept()
         }
 
         // Apply initial mode state

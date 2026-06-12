@@ -97,6 +97,15 @@ class TcpHandler(
     fun armRaidIntercept()    { raidInterceptArmed.set(true) }
     fun disarmRaidIntercept() { raidInterceptArmed.set(false) }
 
+    // ── Brawler WIN intercept ─────────────────────────────────────────────
+    // When armed, the next outbound brawler_finish is fully rebuilt as a WIN.
+    // The inner proto is completely replaced (WIN has 7 fields vs LOSS's 4)
+    // rather than surgically patched — see PacketInjector.patchBrawlerFinishToWin.
+    private val brawlerInterceptArmed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun armBrawlerIntercept()    { brawlerInterceptArmed.set(true) }
+    fun disarmBrawlerIntercept() { brawlerInterceptArmed.set(false) }
+
     /**
      * Called from parseSf3Frames for every INBOUND complete frame.
      * If [frame] is the server's clan_start_fight response, extracts the round
@@ -252,6 +261,21 @@ class TcpHandler(
                 } else {
                     onMessage(connKey, LiveMessage(LiveMessage.Direction.OUTBOUND,
                         "RAID PATCH FAILED — hex: ${payloadForServer.joinToString(" ") { "%02x".format(it) }}".toByteArray()))
+                }
+            }
+
+            // ── Brawler WIN intercept ─────────────────────────────────────
+            // When armed, replaces the outbound brawler_finish with a fully
+            // rebuilt WIN packet (same counter, match info preserved from the
+            // game's own packet so the server knows who was played against).
+            if (brawlerInterceptArmed.get() && GameProtocolParser.tryExtractBrawlerFinish(payloadForServer)) {
+                brawlerInterceptArmed.set(false)
+                val patched = PacketInjector.patchBrawlerFinishToWin(payloadForServer)
+                if (patched != null) {
+                    payloadForServer = patched
+                } else {
+                    onMessage(connKey, LiveMessage(LiveMessage.Direction.OUTBOUND,
+                        "BRAWLER PATCH FAILED — hex: ${payloadForServer.joinToString(" ") { "%02x".format(it) }}".toByteArray()))
                 }
             }
 

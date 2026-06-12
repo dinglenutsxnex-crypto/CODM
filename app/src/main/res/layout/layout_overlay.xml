@@ -291,6 +291,54 @@
                 android:layout_marginTop="8dp"
                 android:visibility="gone" />
 
+            <!-- ── Divider ── -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#FF30363D"
+                android:layout_marginTop="16dp" />
+
+            <!-- ── Brawler section ── -->
+            <TextView
+                android:id="@+id/tv_brawler_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="NO ACTIVE BRAWLER"
+                android:textColor="#FF8B949E"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:layout_marginTop="14dp"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/btn_brawler_win"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="ARM BRAWLER WIN"
+                android:textColor="#FF0D1117"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:background="#FF58A6FF"
+                android:clickable="true"
+                android:focusable="true"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/tv_brawler_arm_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="#FF58A6FF"
+                android:textSize="10sp"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:layout_marginTop="8dp"
+                android:visibility="gone" />
+
         </LinearLayout>
 
         <!-- ── User Mode Panel (user mode only, gone by default) ── -->
@@ -354,6 +402,36 @@
 
                 <Switch
                     android:id="@+id/sw_clan_battle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="false" />
+
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#FF21262D" />
+
+            <!-- Brawler Auto Win -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/tv_label_brawler"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Brawler Auto Win"
+                    android:textColor="#FFE6EDF3"
+                    android:textSize="13sp"
+                    android:fontFamily="monospace" />
+
+                <Switch
+                    android:id="@+id/sw_brawler"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:checked="false" />

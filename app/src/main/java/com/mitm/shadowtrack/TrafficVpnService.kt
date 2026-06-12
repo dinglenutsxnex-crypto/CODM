@@ -227,6 +227,12 @@ class TrafficVpnService : VpnService() {
     /** Cancel a previously armed raid intercept without firing it. */
     fun disarmRaidIntercept() { tcpHandler?.disarmRaidIntercept() }
 
+    /** Arm the brawler WIN intercept — next outbound brawler_finish is rebuilt as a WIN. */
+    fun armBrawlerIntercept() { tcpHandler?.armBrawlerIntercept() }
+
+    /** Cancel a previously armed brawler intercept without firing it. */
+    fun disarmBrawlerIntercept() { tcpHandler?.disarmBrawlerIntercept() }
+
     fun stopVpn() {
         captureJob?.cancel()
         tcpHandler?.shutdown()
