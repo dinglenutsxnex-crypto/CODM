@@ -58,7 +58,7 @@ class OverlayService : Service() {
     private var vmEventsCursor = 0
 
     // ── Mode & user-mode toggle state ──────────────────────────────────────
-    private var isUserMode = false
+    private var isUserMode = true
 
     // Which type of battle is currently active (used to color user-mode labels)
     private enum class BattleType { NONE, EVENT, CLAN }
@@ -101,8 +101,9 @@ class OverlayService : Service() {
                 overlayView?.findViewById<TextView>(R.id.tv_status_bar)?.text =
                     "${events.size} events  ·  last: ${events.last().timeStr}"
             }
-            miniView?.findViewById<TextView>(R.id.tv_mini_count)?.apply {
-                if (!isUserMode) text = "${events.size}"
+            if (!isUserMode) {
+                miniView?.findViewById<BlackHoleMiniView>(R.id.black_hole_view)
+                    ?.countText = "${events.size}"
             }
         }
     }
@@ -686,16 +687,10 @@ class OverlayService : Service() {
     private fun showMini() {
         val view = LayoutInflater.from(this).inflate(R.layout.layout_overlay_mini, null)
         miniView = view
-        view.clipToOutline = true
-        view.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
 
-        val miniCountTv = view.findViewById<TextView>(R.id.tv_mini_count)
-        if (isUserMode) {
-            miniCountTv?.visibility = View.GONE
-        } else {
-            miniCountTv?.visibility = View.VISIBLE
-            miniCountTv?.text = if (events.isEmpty()) "--" else "${events.size}"
-        }
+        // Pass event count to the black hole only in dev mode; user mode = pure black hole
+        view.findViewById<BlackHoleMiniView>(R.id.black_hole_view)?.countText =
+            if (isUserMode) null else if (events.isEmpty()) "--" else "${events.size}"
 
         val params = makeParams(w = dp(80f), h = dp(80f))
 

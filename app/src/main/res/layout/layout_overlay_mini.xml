@@ -7,37 +7,9 @@
     android:clickable="true"
     android:focusable="true">
 
-    <com.mitm.shadowtrack.GlassCircleView
+    <com.mitm.shadowtrack.BlackHoleMiniView
+        android:id="@+id/black_hole_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:gravity="center">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="[HS]"
-            android:textColor="#FF39FF14"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:fontFamily="monospace"
-            android:gravity="center" />
-
-        <TextView
-            android:id="@+id/tv_mini_count"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="--"
-            android:textColor="#CC39FF14"
-            android:textSize="10sp"
-            android:textStyle="bold"
-            android:fontFamily="monospace"
-            android:gravity="center" />
-
-    </LinearLayout>
 
 </FrameLayout>
