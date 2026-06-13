@@ -197,16 +197,18 @@ object PacketInjector {
     }
 
     /**
-     * Surgically patches the game's own raid_fight_finish packet so that
-     * params.field[2] fixed32 (the damage/boss_max_hp ratio) is set to 1.0,
-     * meaning 100% of boss HP was dealt — boss reduced to 0 HP.
+     * Patches the game's own raid_fight_finish packet so that params.field[2] fixed32
+     * (the damage/boss_max_hp ratio) is set to 1.0 — boss reduced to 0 HP.
      *
-     * Confirmed from hammerscale capture: the packet is always a small (0x01) frame,
-     * params.field[2] has tag byte 0x15 = (field_num 2 << 3) | wire_type 5 (fixed32),
-     * followed by exactly 4 bytes.  Setting those 4 bytes to [0x00, 0x00, 0x80, 0x3F]
-     * encodes LE IEEE 754 float 1.0 — no length bytes change so no further surgery needed.
+     * Two cases handled:
+     *   • field[2] present  (player dealt real damage): overwrite the 4 bytes in-place
+     *     with [0x00, 0x00, 0x80, 0x3F] (LE IEEE 754 float 1.0).  No length changes.
+     *   • field[2] absent   (player dealt 0 damage): the game omits the ratio field
+     *     entirely.  In this case we inject tag 0x15 + 4-byte 1.0 at the front of the
+     *     existing params blob and rebuild the envelope via envelope().  This means the
+     *     intercept works even when you deal zero actual damage.
      *
-     * Returns the patched copy on success, or null if the tag is not found / parse fails.
+     * Returns the patched frame on success, or null if the outer frame cannot be parsed.
      */
     fun patchRaidFightFinishToMaxDamage(data: ByteArray): ByteArray? {
         if (data.size < 3 || (data[0].toInt() and 0xFF) != 0x01) return null
@@ -215,13 +217,20 @@ object PacketInjector {
         if (data.size < protoEnd) return null
 
         var pos = 2
+        var outerCounter = 0L  // captured from outer field[1] for envelope rebuild
         while (pos < protoEnd) {
             val tagByte = data[pos].toInt() and 0xFF; pos++
             val fieldNum = tagByte ushr 3; val wireType = tagByte and 7
             when (wireType) {
                 0 -> {
-                    while (pos < protoEnd && (data[pos].toInt() and 0x80) != 0) pos++
-                    pos++
+                    // Read and capture the varint (needed for counter in rebuild path)
+                    var v = 0L; var vs = 0
+                    while (pos < protoEnd) {
+                        val b = data[pos++].toInt() and 0xFF
+                        v = v or ((b and 0x7F).toLong() shl vs); vs += 7
+                        if (b and 0x80 == 0) break
+                    }
+                    if (fieldNum == 1) outerCounter = v
                 }
                 2 -> {
                     var len = 0; var shift = 0
@@ -254,6 +263,7 @@ object PacketInjector {
                             }
                             5 -> {
                                 if (pf == 2 && pp + 4 <= paramsEnd) {
+                                    // field[2] exists — overwrite in-place (player dealt some damage)
                                     return data.copyOf().also { copy ->
                                         copy[pp]     = 0x00
                                         copy[pp + 1] = 0x00
@@ -267,7 +277,13 @@ object PacketInjector {
                             else -> return null
                         }
                     }
-                    return null
+                    // field[2] was absent — player dealt 0 damage so the game omitted the ratio
+                    // field entirely. Inject field[2] = 1.0 (tag 0x15 = field 2 fixed32) by
+                    // prepending it to the existing params bytes and rebuilding the envelope.
+                    val injection = byteArrayOf(0x15, 0x00, 0x00, 0x80.toByte(), 0x3F)
+                    val origParams = data.copyOfRange(paramsStart, paramsEnd)
+                    val newParams  = injection + origParams
+                    return envelope("raid_fight_finish", newParams, outerCounter)
                 }
                 else -> return null
             }
