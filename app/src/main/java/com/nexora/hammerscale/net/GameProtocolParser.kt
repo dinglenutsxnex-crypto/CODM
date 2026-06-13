@@ -64,10 +64,12 @@ object GameProtocolParser {
         // Check event_battle_start_fight FIRST because start_fight is a substring of it —
         // a set iteration order is undefined so we'd risk misclassifying the high-priority
         // hero fight as a low-priority clan fight if start_fight matched first.
+        // Also check faction_wars_start_fight before start_fight since it contains "start_fight".
         if (isOut) {
             val cmd = when {
-                text.contains("event_battle_start_fight") -> "event_battle_start_fight"
-                text.contains("clan_start_fight")         -> "clan_start_fight"
+                text.contains("event_battle_start_fight")  -> "event_battle_start_fight"
+                text.contains("faction_wars_start_fight")  -> "faction_wars_start_fight"
+                text.contains("clan_start_fight")          -> "clan_start_fight"
                 text.contains("start_fight")              -> "start_fight"
                 else                                      -> null
             }
@@ -77,9 +79,16 @@ object GameProtocolParser {
             }
         }
 
-        // Check clan_finish_fight before finish_fight — clan_finish_fight contains "finish_fight"
+        // Check faction_wars_finish_fight before clan_finish_fight since it contains "finish_fight".
+        // Check clan_finish_fight before finish_fight since clan_finish_fight contains "finish_fight"
         // as a substring so order matters to avoid misclassification.
-        val endCmdOrdered = listOf("clan_finish_fight", "event_battle_finish_fight", "brawler_finish", "finish_fight")
+        val endCmdOrdered = listOf(
+            "faction_wars_finish_fight",
+            "clan_finish_fight",
+            "event_battle_finish_fight",
+            "brawler_finish",
+            "finish_fight"
+        )
         for (cmd in endCmdOrdered) {
             if (text.contains(cmd)) {
                 val id = extractIdFromRawText(text)
