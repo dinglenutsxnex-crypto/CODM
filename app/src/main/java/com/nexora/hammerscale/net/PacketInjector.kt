@@ -426,11 +426,11 @@ object PacketInjector {
     /**
      * Patches an outbound faction_wars_finish_fight to WIN.
      * 
-     * WIN inner proto has field[28] bytes, LOSS has field[31] varint.
-     * WIN inner: 08f6e20312040a02080a (10 bytes)
-     * LOSS inner: 08f8e20312040a02080a (9 bytes)
+     * WIN inner proto has field[24] bytes, LOSS has field[30] varint.
+     * WIN: field[24] = sub-message with field[25]=rounds, field[31]=END GROUP
+     * LOSS: field[30] = 237 (no field[24])
      * 
-     * The patch replaces field[31] with field[28] containing `12040a`.
+     * The patch removes field[30] and adds field[24] with WIN data.
      * 
      * Returns null if the frame cannot be parsed.
      */
@@ -473,7 +473,7 @@ object PacketInjector {
 
     /**
      * Given a raw (decompressed) SF3 envelope proto that is a faction_wars_finish_fight,
-     * rebuilds the inner params as a WIN (adds field[28], removes field[31]).
+     * patches the inner params: removes field[30] and adds field[24] with WIN data.
      * Returns null if not a faction_wars_finish_fight or counter cannot be extracted.
      */
     private fun tryPatchFactionWarProto(rawProto: ByteArray): ByteArray? {
@@ -503,8 +503,9 @@ object PacketInjector {
         }
         if (!cmdFound) return null
 
-        // Full parse: extract counter
+        // Full parse: extract counter and params
         var counter = -1L
+        var paramsBytes: ByteArray? = null
         var pos = 0
         while (pos < rawProto.size) {
             val tr = readVarintAt(rawProto, pos) ?: break
@@ -521,17 +522,83 @@ object PacketInjector {
                     val lr = readVarintAt(rawProto, pos) ?: break
                     pos += lr.second
                     val len = lr.first.toInt()
+                    if (pos + len > rawProto.size) break
+                    if (fieldNum == 3) paramsBytes = rawProto.copyOfRange(pos, pos + len)
                     pos += len
                 }
                 else -> break
             }
         }
-        if (counter < 0) return null
+        if (counter < 0 || paramsBytes == null) return null
 
-        // WIN inner proto (10 bytes): 08 f6 e2 03 12 04 0a 02 08 0a
-        // field[1]=8, field[30](START GROUP)=8, field[28]=bytes(12040a), field[0]=END GROUP
-        val winInnerParams = bytesFromHex("08f6e20312040a02080a")
-        return envelope("faction_wars_finish_fight", winInnerParams, counter)
+        // Patch inner params: remove field[30], add field[24] with WIN data
+        val patchedParams = patchFactionWarParamsToWin(paramsBytes)
+        
+        val newParams = proto {
+            varintField(1, counter)
+            stringField(2, "faction_wars_finish_fight")
+            bytesField(3, patchedParams)
+        }
+        return if (newParams.size <= 255) {
+            byteArrayOf(0x01, newParams.size.toByte()) + newParams
+        } else {
+            val compressed = rawDeflate(newParams)
+            val lenBytes = ByteBuffer.allocate(4)
+                .order(ByteOrder.LITTLE_ENDIAN).putInt(compressed.size).array()
+            byteArrayOf(0x02) + lenBytes + compressed
+        }
+    }
+    
+    /**
+     * Patches faction war inner params to WIN: removes field[30], adds field[24].
+     * WIN has field[24] = sub-message with field[25]=rounds, field[31]=END GROUP
+     */
+    private fun patchFactionWarParamsToWin(params: ByteArray): ByteArray {
+        val result = mutableListOf<Byte>()
+        var pos = 0
+        var foundField24 = false
+        
+        while (pos < params.size) {
+            val tag = params[pos]
+            val fieldNum = (tag shr 3).toInt()
+            val wireType = tag.toInt() and 7
+            
+            if (fieldNum == 30) {
+                // Skip field[30] (LOSS indicator)
+                pos += 1
+                while (pos < params.size && (params[pos].toInt() and 0x80) != 0) pos++
+                pos++
+                continue
+            }
+            
+            if (fieldNum == 24) foundField24 = true
+            
+            // Copy field as-is
+            result.add(tag)
+            pos++
+            
+            when (wireType) {
+                0 -> { if (pos < params.size) { result.add(params[pos]); pos++ } }
+                1 -> { for (i in 0..7) { if (pos + i < params.size) result.add(params[pos + i]) }; pos += 8 }
+                2 -> {
+                    val len = params[pos].toInt() and 0xFF
+                    result.add(params[pos]); pos++
+                    for (i in 0 until len) { if (pos + i < params.size) result.add(params[pos + i]) }
+                    pos += len
+                }
+                5 -> { for (i in 0..3) { if (pos + i < params.size) result.add(params[pos + i]) }; pos += 4 }
+            }
+        }
+        
+        // If no field[24], add it with WIN data
+        if (!foundField24) {
+            val winSubMsg = byteArrayOf(0xc8, 0x03, 0xf9.toByte())  // field[25]=3, field[31]=END GROUP
+            val field24Tag = byteArrayOf(0xc2, winSubMsg.size.toByte())  // field[24] tag + length
+            result.addAll(field24Tag.toList())
+            result.addAll(winSubMsg.toList())
+        }
+        
+        return result.toByteArray()
     }
 
     /** Extract the first field[1] bytes value from a proto blob; null on parse failure. */

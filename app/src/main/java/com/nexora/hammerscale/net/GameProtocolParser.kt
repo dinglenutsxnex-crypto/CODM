@@ -37,7 +37,7 @@ object GameProtocolParser {
     )
 
     private val BATTLE_START_COMMANDS = setOf("start_fight", "event_battle_start_fight", "clan_start_fight", "faction_wars_start_fight")
-    private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight", "faction_wars_finish_fight")
+    private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")
 
     fun parse(data: ByteArray, direction: LiveMessage.Direction): GameEvent? {
         if (data.size < 3) return null
@@ -347,6 +347,11 @@ object GameProtocolParser {
                 parseFactionWarFinish(params)
             }
 
+            command == "faction_wars_finish_fight" && !isOut -> {
+                // Server response - confirm the faction war result
+                GameEvent.WinConfirmed("faction_war")
+            }
+
             command in BATTLE_END_COMMANDS && isOut -> {
                 val battleId = params?.let { extractBattleIdDirect(it) }
                 GameEvent.BattleCommand(command, battleId, true)
@@ -425,15 +430,12 @@ object GameProtocolParser {
     /**
      * Parses an outbound faction_wars_finish_fight params blob and returns a [GameEvent.FactionWarFinished].
      *
-     * faction_wars_finish_fight inner proto (confirmed from captured win + loss packets):
-     *   field[1] varint = some ID
-     *   field[28] bytes = round data (present on WIN only)
-     *   field[0] bytes  = round data (present on WIN only)
-     *   field[31] varint = 61816 (present on LOSS only — indicates loss)
-     *   field[2] bytes  = empty on LOSS
+     * faction_wars_finish_fight inner proto structure:
+     *   field[0]  fixed64 = some ID
+     *   field[24] bytes   = WIN indicator (sub-message with field[25]=rounds, field[31]=END GROUP)
+     *   field[30] varint  = 237 (LOSS indicator, no field[24])
      *
-     * Detection: WIN = has field[28], LOSS = has field[31]
-     * Round count is inferred from presence: WIN with field[28] = 3 rounds won
+     * Detection: WIN = has field[24], LOSS = has field[30]
      *
      * Falls back to [GameEvent.BattleCommand] if params are null or unparseable.
      */
@@ -441,11 +443,11 @@ object GameProtocolParser {
         if (params == null) return GameEvent.BattleCommand("faction_wars_finish_fight", null, true)
         return try {
             val inner = readProtoFields(params)
-            val hasField28 = inner.containsKey(28)  // WIN indicator
-            val hasField31 = inner.containsKey(31)  // LOSS indicator
+            val hasField24 = inner.containsKey(24)  // WIN indicator
+            val hasField30 = inner.containsKey(30)  // LOSS indicator
             
-            val result = if (hasField28) "WIN" else "LOSS"
-            val wonRounds = if (hasField28) 3 else 0  // WIN = 3 rounds, LOSS = 0 rounds
+            val result = if (hasField24) "WIN" else "LOSS"
+            val wonRounds = if (hasField24) 3 else 0  // WIN = 3 rounds, LOSS = 0 rounds
             
             GameEvent.FactionWarFinished(result, wonRounds)
         } catch (_: Exception) {
