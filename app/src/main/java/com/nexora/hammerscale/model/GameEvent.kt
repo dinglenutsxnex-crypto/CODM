@@ -43,7 +43,14 @@ sealed class GameEvent {
         is LoginIn         -> "<< LOGIN OK"
         is Command         -> "${if (isOutbound) ">>" else "<<"} ${name}"
         is BattleCommand   -> "${if (isOutbound) ">>" else "<<"} ${name}${if (battleId != null) "  #$battleId" else ""}"
-        is BattleStarted   -> "!! BATTLE STARTED  #${battleId}${if (commandName == "event_battle_start_fight") " [FIGHT]" else " [clan]"}"
+        is BattleStarted   -> {
+            val typeLabel = when {
+                commandName == "event_battle_start_fight"  -> "[FIGHT]"
+                commandName?.contains("faction_wars") == true -> "[FACTION WAR]"
+                else                                         -> "[${commandName ?: "unknown"}]"
+            }
+            "!! BATTLE STARTED  #${battleId} $typeLabel"
+        }
         is WinConfirmed    -> "## WIN CONFIRMED  #${battleId}"
         is BrawlerFinished -> ">> BRAWLER FINISH  ${result}  ${wonRounds}/${totalRounds}"
         is FactionWarFinished -> ">> FACTION WAR FINISH  ${result}  ${wonRounds}/3"
