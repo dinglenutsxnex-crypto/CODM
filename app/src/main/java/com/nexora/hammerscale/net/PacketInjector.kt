@@ -423,6 +423,117 @@ object PacketInjector {
         return envelope("brawler_finish", newParams, counter)
     }
 
+    /**
+     * Patches an outbound faction_wars_finish_fight to WIN.
+     * 
+     * WIN inner proto has field[28] bytes, LOSS has field[31] varint.
+     * WIN inner: 08f6e20312040a02080a (10 bytes)
+     * LOSS inner: 08f8e20312040a02080a (9 bytes)
+     * 
+     * The patch replaces field[31] with field[28] containing `12040a`.
+     * 
+     * Returns null if the frame cannot be parsed.
+     */
+    fun patchFactionWarFinishToWin(data: ByteArray): ByteArray? {
+        var pos = 0
+        while (pos < data.size) {
+            val t = data[pos].toInt() and 0xFF
+            when (t) {
+                0x01 -> {
+                    if (pos + 2 > data.size) return null
+                    val len = data[pos + 1].toInt() and 0xFF
+                    if (pos + 2 + len > data.size) return null
+                    val rawProto = data.copyOfRange(pos + 2, pos + 2 + len)
+                    val patched = tryPatchFactionWarProto(rawProto)
+                    if (patched != null) {
+                        val before = data.copyOfRange(0, pos)
+                        val after  = data.copyOfRange(pos + 2 + len, data.size)
+                        return before + patched + after
+                    }
+                    pos += 2 + len
+                }
+                0x02 -> {
+                    if (pos + 5 > data.size) return null
+                    val compLen = ByteBuffer.wrap(data, pos + 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                    if (compLen <= 0 || pos + 5 + compLen > data.size) return null
+                    val rawProto = rawInflate(data.copyOfRange(pos + 5, pos + 5 + compLen)) ?: return null
+                    val patched = tryPatchFactionWarProto(rawProto)
+                    if (patched != null) {
+                        val before = data.copyOfRange(0, pos)
+                        val after  = data.copyOfRange(pos + 5 + compLen, data.size)
+                        return before + patched + after
+                    }
+                    pos += 5 + compLen
+                }
+                else -> pos++
+            }
+        }
+        return null
+    }
+
+    /**
+     * Given a raw (decompressed) SF3 envelope proto that is a faction_wars_finish_fight,
+     * rebuilds the inner params as a WIN (adds field[28], removes field[31]).
+     * Returns null if not a faction_wars_finish_fight or counter cannot be extracted.
+     */
+    private fun tryPatchFactionWarProto(rawProto: ByteArray): ByteArray? {
+        // Quick command check
+        var cmdFound = false
+        var pp = 0
+        while (pp < rawProto.size) {
+            val tr = readVarintAt(rawProto, pp) ?: break
+            val tag = tr.first; pp += tr.second
+            val fieldNum = (tag shr 3).toInt()
+            val wireType = (tag and 7L).toInt()
+            when (wireType) {
+                0 -> { val vr = readVarintAt(rawProto, pp) ?: break; pp += vr.second }
+                2 -> {
+                    val lr = readVarintAt(rawProto, pp) ?: break; pp += lr.second
+                    val len = lr.first.toInt()
+                    if (pp + len > rawProto.size) break
+                    if (fieldNum == 2) {
+                        val cmd = rawProto.copyOfRange(pp, pp + len).toString(Charsets.UTF_8)
+                        if (cmd != "faction_wars_finish_fight") return null
+                        cmdFound = true
+                    }
+                    pp += len
+                }
+                else -> break
+            }
+        }
+        if (!cmdFound) return null
+
+        // Full parse: extract counter
+        var counter = -1L
+        var pos = 0
+        while (pos < rawProto.size) {
+            val tr = readVarintAt(rawProto, pos) ?: break
+            val tag = tr.first; pos += tr.second
+            val fieldNum = (tag shr 3).toInt()
+            val wireType = (tag and 7L).toInt()
+            when (wireType) {
+                0 -> {
+                    val vr = readVarintAt(rawProto, pos) ?: break
+                    if (fieldNum == 1) counter = vr.first
+                    pos += vr.second
+                }
+                2 -> {
+                    val lr = readVarintAt(rawProto, pos) ?: break
+                    pos += lr.second
+                    val len = lr.first.toInt()
+                    pos += len
+                }
+                else -> break
+            }
+        }
+        if (counter < 0) return null
+
+        // WIN inner proto (10 bytes): 08 f6 e2 03 12 04 0a 02 08 0a
+        // field[1]=8, field[30](START GROUP)=8, field[28]=bytes(12040a), field[0]=END GROUP
+        val winInnerParams = bytesFromHex("08f6e20312040a02080a")
+        return envelope("faction_wars_finish_fight", winInnerParams, counter)
+    }
+
     /** Extract the first field[1] bytes value from a proto blob; null on parse failure. */
     private fun extractBytesField1(data: ByteArray): ByteArray? {
         var pos = 0
@@ -458,6 +569,11 @@ object PacketInjector {
             if (shift >= 64) break
         }
         return null
+    }
+
+    /** Convert hex string to byte array (e.g. "0a1b2c" -> byteArrayOf(0x0a, 0x1b, 0x2c)). */
+    private fun bytesFromHex(hex: String): ByteArray {
+        return hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     }
 
     /** Raw inflate (windowBits = -15, no zlib header). Mirrors rawDeflate. */

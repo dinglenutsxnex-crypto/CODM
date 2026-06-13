@@ -32,11 +32,12 @@ object GameProtocolParser {
         "refresh_battles", "cheat_generate_battle",
         "clan_refresh_battles", "start_fight", "get_battles",
         "event_battle_start_fight", "event_battle_finish_fight",
-        "clan_start_fight", "clan_finish_fight"
+        "clan_start_fight", "clan_finish_fight",
+        "faction_wars_start_fight", "faction_wars_finish_fight"
     )
 
-    private val BATTLE_START_COMMANDS = setOf("start_fight", "event_battle_start_fight", "clan_start_fight")
-    private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")
+    private val BATTLE_START_COMMANDS = setOf("start_fight", "event_battle_start_fight", "clan_start_fight", "faction_wars_start_fight")
+    private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight", "faction_wars_finish_fight")
 
     fun parse(data: ByteArray, direction: LiveMessage.Direction): GameEvent? {
         if (data.size < 3) return null
@@ -186,6 +187,39 @@ object GameProtocolParser {
     }
 
     /**
+     * Returns true if [data] is a complete outbound faction_wars_finish_fight SF3 frame.
+     * Used by the faction war WIN intercept in TcpHandler to identify the packet to patch.
+     */
+    fun tryExtractFactionWarFinish(data: ByteArray): Boolean {
+        var pos = 0
+        while (pos < data.size) {
+            val t = data[pos].toInt() and 0xFF
+            when (t) {
+                0x01 -> {
+                    if (pos + 2 > data.size) break
+                    val len = data[pos + 1].toInt() and 0xFF
+                    if (pos + 2 + len > data.size) break
+                    val payload = data.copyOfRange(pos + 2, pos + 2 + len)
+                    val cmd = (readProtoFields(payload)[2] as? ByteArray)?.toString(Charsets.UTF_8)
+                    if (cmd == "faction_wars_finish_fight") return true
+                    pos += 2 + len
+                }
+                0x02 -> {
+                    if (pos + 5 > data.size) break
+                    val compLen = ByteBuffer.wrap(data, pos + 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                    if (compLen <= 0 || pos + 5 + compLen > data.size) break
+                    val payload = rawDeflate(data.copyOfRange(pos + 5, pos + 5 + compLen)) ?: break
+                    val cmd = (readProtoFields(payload)[2] as? ByteArray)?.toString(Charsets.UTF_8)
+                    if (cmd == "faction_wars_finish_fight") return true
+                    pos += 5 + compLen
+                }
+                else -> pos++
+            }
+        }
+        return false
+    }
+
+    /**
      * Same as [tryExtractFinishFight] but for clan_finish_fight.
      * Returns Pair(battleId, counter) if [data] is a complete outbound clan_finish_fight frame.
      * The field layout is identical to event_battle_finish_fight — params.field[1] = battleId.
@@ -309,6 +343,10 @@ object GameProtocolParser {
                 parseBrawlerFinish(params)
             }
 
+            command == "faction_wars_finish_fight" && isOut -> {
+                parseFactionWarFinish(params)
+            }
+
             command in BATTLE_END_COMMANDS && isOut -> {
                 val battleId = params?.let { extractBattleIdDirect(it) }
                 GameEvent.BattleCommand(command, battleId, true)
@@ -381,6 +419,37 @@ object GameProtocolParser {
             GameEvent.BrawlerFinished(result, wonRounds, totalRounds)
         } catch (_: Exception) {
             GameEvent.BattleCommand("brawler_finish", null, true)
+        }
+    }
+
+    /**
+     * Parses an outbound faction_wars_finish_fight params blob and returns a [GameEvent.FactionWarFinished].
+     *
+     * faction_wars_finish_fight inner proto (confirmed from captured win + loss packets):
+     *   field[1] varint = some ID
+     *   field[28] bytes = round data (present on WIN only)
+     *   field[0] bytes  = round data (present on WIN only)
+     *   field[31] varint = 61816 (present on LOSS only — indicates loss)
+     *   field[2] bytes  = empty on LOSS
+     *
+     * Detection: WIN = has field[28], LOSS = has field[31]
+     * Round count is inferred from presence: WIN with field[28] = 3 rounds won
+     *
+     * Falls back to [GameEvent.BattleCommand] if params are null or unparseable.
+     */
+    private fun parseFactionWarFinish(params: ByteArray?): GameEvent {
+        if (params == null) return GameEvent.BattleCommand("faction_wars_finish_fight", null, true)
+        return try {
+            val inner = readProtoFields(params)
+            val hasField28 = inner.containsKey(28)  // WIN indicator
+            val hasField31 = inner.containsKey(31)  // LOSS indicator
+            
+            val result = if (hasField28) "WIN" else "LOSS"
+            val wonRounds = if (hasField28) 3 else 0  // WIN = 3 rounds, LOSS = 0 rounds
+            
+            GameEvent.FactionWarFinished(result, wonRounds)
+        } catch (_: Exception) {
+            GameEvent.BattleCommand("faction_wars_finish_fight", null, true)
         }
     }
 

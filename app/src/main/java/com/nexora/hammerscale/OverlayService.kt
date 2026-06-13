@@ -53,10 +53,12 @@ class OverlayService : Service() {
     private var currentBattleId: String? = null
     private var lastWinConfirmedId: String? = null
 
-    private var interceptIsArmed    = false
-    private var raidInterceptArmed  = false
-    private var brawlerInterceptArmed = false
-    private var brawlerBattleActive   = false
+    private var interceptIsArmed       = false
+    private var raidInterceptArmed     = false
+    private var brawlerInterceptArmed  = false
+    private var brawlerBattleActive    = false
+    private var factionWarInterceptArmed = false
+    private var factionWarBattleActive   = false
 
     private var roundsToWin: Int = 3
     private var autoSetBattleId: String? = null
@@ -76,10 +78,11 @@ class OverlayService : Service() {
     private var activeBattleType = BattleType.NONE
 
     // Whether each user-mode toggle is switched on
-    private var userEventBattleEnabled = false
-    private var userClanBattleEnabled  = false
-    private var userRaidEnabled        = false
-    private var userBrawlerEnabled     = false
+    private var userEventBattleEnabled   = false
+    private var userClanBattleEnabled    = false
+    private var userRaidEnabled          = false
+    private var userBrawlerEnabled       = false
+    private var userFactionWarEnabled    = false
 
     // Normal label color for user-mode toggles
     private val labelColorNormal = Color.parseColor("#FFE6EDF3")
@@ -210,6 +213,15 @@ class OverlayService : Service() {
                 disarmBattleIntercept()
                 updateUserModeBattleLabels()
             }
+            is GameEvent.FactionWarFinished -> {
+                val wasWin = last.result == "WIN"
+                factionWarBattleActive = false
+                disarmFactionWarIntercept()
+                updateUserModeFactionWarLabel()
+                if (isUserMode && userFactionWarEnabled && wasWin) flashLabelGreen(R.id.tv_label_faction_war)
+                pendingArmJob?.cancel()
+                pendingArmJob = null
+            }
             is GameEvent.BattleCommand -> {
                 if (last.name in setOf("finish_fight", "event_battle_finish_fight", "clan_finish_fight")) {
                     pendingArmJob?.cancel()
@@ -235,6 +247,22 @@ class OverlayService : Service() {
                     disarmBrawlerIntercept()
                     updateBrawlerPanel()
                     updateUserModeBrawlerLabel()
+                }
+                if (last.name == "faction_wars_start_fight" && last.isOutbound) {
+                    factionWarBattleActive = true
+                    updateUserModeFactionWarLabel()
+                    if (userFactionWarEnabled) {
+                        pendingArmJob?.cancel()
+                        pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                            delay(3_000)
+                            armFactionWarIntercept()
+                        }
+                    }
+                }
+                if (last.name == "faction_wars_finish_fight" && last.isOutbound) {
+                    factionWarBattleActive = false
+                    disarmFactionWarIntercept()
+                    updateUserModeFactionWarLabel()
                 }
             }
             else -> {}
@@ -361,6 +389,24 @@ class OverlayService : Service() {
         brawlerInterceptArmed = false
         TrafficVpnService.instance?.disarmBrawlerIntercept()
         updateBrawlerPanel()
+    }
+
+    private fun armFactionWarIntercept() {
+        if (factionWarInterceptArmed) return
+        val vpn = TrafficVpnService.instance ?: return
+        factionWarInterceptArmed = true
+        vpn.armFactionWarIntercept()
+    }
+
+    private fun disarmFactionWarIntercept() {
+        if (!factionWarInterceptArmed) return
+        factionWarInterceptArmed = false
+        TrafficVpnService.instance?.disarmFactionWarIntercept()
+    }
+
+    private fun updateUserModeFactionWarLabel() {
+        val tv = overlayView?.findViewById<TextView>(R.id.tv_label_faction_war) ?: return
+        tv.setTextColor(if (factionWarBattleActive) labelColorActive else labelColorNormal)
     }
 
     // ── Green flash helper (user-mode server-confirm feedback) ────────────
@@ -757,22 +803,25 @@ class OverlayService : Service() {
         }
 
         // ── User mode switches ────────────────────────────────────────────
-        val swEvent   = view.findViewById<Switch>(R.id.sw_event_battle)
-        val swClan    = view.findViewById<Switch>(R.id.sw_clan_battle)
-        val swRaid    = view.findViewById<Switch>(R.id.sw_raid)
-        val swBrawler = view.findViewById<Switch>(R.id.sw_brawler)
+        val swEvent        = view.findViewById<Switch>(R.id.sw_event_battle)
+        val swClan         = view.findViewById<Switch>(R.id.sw_clan_battle)
+        val swRaid         = view.findViewById<Switch>(R.id.sw_raid)
+        val swBrawler      = view.findViewById<Switch>(R.id.sw_brawler)
+        val swFactionWar   = view.findViewById<Switch>(R.id.sw_faction_war)
 
         styleSwitch(swEvent)
         styleSwitch(swClan)
         styleSwitch(swRaid)
         styleSwitch(swBrawler)
+        styleSwitch(swFactionWar)
 
         // Restore session state BEFORE attaching listeners so setting isChecked
         // doesn't fire the callbacks and trigger spurious arm/disarm calls.
-        swEvent.isChecked   = userEventBattleEnabled
-        swClan.isChecked    = userClanBattleEnabled
-        swRaid.isChecked    = userRaidEnabled
-        swBrawler.isChecked = userBrawlerEnabled
+        swEvent.isChecked        = userEventBattleEnabled
+        swClan.isChecked         = userClanBattleEnabled
+        swRaid.isChecked         = userRaidEnabled
+        swBrawler.isChecked      = userBrawlerEnabled
+        swFactionWar.isChecked   = userFactionWarEnabled
 
         swEvent.setOnCheckedChangeListener { _, checked ->
             userEventBattleEnabled = checked
@@ -832,6 +881,21 @@ class OverlayService : Service() {
             }
         }
 
+        swFactionWar.setOnCheckedChangeListener { _, checked ->
+            userFactionWarEnabled = checked
+            if (checked && factionWarBattleActive) {
+                pendingArmJob?.cancel()
+                pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                    delay(3_000)
+                    armFactionWarIntercept()
+                }
+            } else if (!checked) {
+                pendingArmJob?.cancel()
+                pendingArmJob = null
+                disarmFactionWarIntercept()
+            }
+        }
+
         // ── Row click handlers for user mode toggles ─────────────────────
         view.findViewById<View>(R.id.row_event_battle)?.setOnClickListener {
             swEvent.isChecked = !swEvent.isChecked
@@ -844,6 +908,9 @@ class OverlayService : Service() {
         }
         view.findViewById<View>(R.id.row_brawler)?.setOnClickListener {
             swBrawler.isChecked = !swBrawler.isChecked
+        }
+        view.findViewById<View>(R.id.row_faction_war)?.setOnClickListener {
+            swFactionWar.isChecked = !swFactionWar.isChecked
         }
 
         // ── ARM BRAWLER WIN button (dev mode brawler intercept) ──────────
