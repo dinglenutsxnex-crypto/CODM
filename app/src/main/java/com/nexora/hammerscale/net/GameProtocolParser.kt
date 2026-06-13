@@ -45,7 +45,10 @@ object GameProtocolParser {
         // ── Proto parsing first (most accurate — resolves varints properly) ────
         val proto = extractPayload(data)
         if (proto != null) {
-            val protoResult = try { parseEnvelope(proto, direction) } catch (_: Exception) { null }
+            val protoResult = try { parseEnvelope(proto, direction) } catch (e: Exception) { 
+                android.util.Log.e("GameProtocolParser", "parseEnvelope exception: ${e.message}")
+                null 
+            }
             if (protoResult != null) return protoResult
         }
 
