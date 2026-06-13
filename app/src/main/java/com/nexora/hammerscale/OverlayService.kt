@@ -169,8 +169,11 @@ class OverlayService : Service() {
         val last = list.lastOrNull()
         when (last) {
             is GameEvent.BattleStarted -> {
-                activeBattleType = if (last.commandName == "event_battle_start_fight")
-                    BattleType.EVENT else BattleType.CLAN
+                activeBattleType = when (last.commandName) {
+                    "event_battle_start_fight"  -> BattleType.EVENT
+                    "faction_wars_start_fight"  -> BattleType.NONE  // faction war handled separately
+                    else                         -> BattleType.CLAN
+                }
                 updateUserModeBattleLabels()
 
                 val shouldArm = (activeBattleType == BattleType.EVENT && userEventBattleEnabled) ||
