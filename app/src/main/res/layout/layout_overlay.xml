@@ -22,19 +22,53 @@
             android:orientation="horizontal"
             android:background="@drawable/overlay_header_bg"
             android:gravity="center_vertical"
-            android:paddingStart="12dp"
+            android:paddingStart="20dp"
             android:paddingEnd="4dp">
 
-            <TextView
-                android:layout_width="0dp"
+            <!-- Title wrapper to keep brackets tight -->
+            <LinearLayout
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="HAMMERSCALE"
-                android:textColor="#FF58A6FF"
-                android:textSize="13sp"
-                android:textStyle="bold"
-                android:fontFamily="monospace"
-                android:letterSpacing="0.1" />
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="[ "
+                    android:textColor="#FF8B949E"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.1" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="HAMMERSCALE"
+                    android:textColor="#FF00E5FF"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.1" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text=" ]"
+                    android:textColor="#FF8B949E"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.1" />
+
+            </LinearLayout>
+
+            <!-- Spacer to push buttons to the right -->
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
 
             <TextView
                 android:id="@+id/tv_event_count"
@@ -355,10 +389,14 @@
 
             <!-- Event Battle Auto Win -->
             <LinearLayout
+                android:id="@+id/row_event_battle"
                 android:layout_width="match_parent"
                 android:layout_height="52dp"
                 android:orientation="horizontal"
-                android:gravity="center_vertical">
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:background="?android:attr/selectableItemBackground">
 
                 <TextView
                     android:id="@+id/tv_label_event_battle"
@@ -385,10 +423,14 @@
 
             <!-- Clan Battle Auto Win -->
             <LinearLayout
+                android:id="@+id/row_clan_battle"
                 android:layout_width="match_parent"
                 android:layout_height="52dp"
                 android:orientation="horizontal"
-                android:gravity="center_vertical">
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:background="?android:attr/selectableItemBackground">
 
                 <TextView
                     android:id="@+id/tv_label_clan_battle"
@@ -415,10 +457,14 @@
 
             <!-- Brawler Auto Win -->
             <LinearLayout
+                android:id="@+id/row_brawler"
                 android:layout_width="match_parent"
                 android:layout_height="52dp"
                 android:orientation="horizontal"
-                android:gravity="center_vertical">
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:background="?android:attr/selectableItemBackground">
 
                 <TextView
                     android:id="@+id/tv_label_brawler"
@@ -445,10 +491,14 @@
 
             <!-- Raid Max Dmg -->
             <LinearLayout
+                android:id="@+id/row_raid"
                 android:layout_width="match_parent"
                 android:layout_height="52dp"
                 android:orientation="horizontal"
-                android:gravity="center_vertical">
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:background="?android:attr/selectableItemBackground">
 
                 <TextView
                     android:id="@+id/tv_label_raid"

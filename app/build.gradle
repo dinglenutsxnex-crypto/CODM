@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace 'com.mitm.shadowtrack'
+    namespace 'com.nexora.hammerscale'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.mitm.shadowtrack"
+        applicationId "com.nexora.hammerscale"
         minSdk 26
         targetSdk 34
         versionCode 1

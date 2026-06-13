@@ -30,6 +30,9 @@
     <!-- UI -->
     <color name="divider_color">#21262D</color>
 
+    <!-- App icon -->
+    <color name="ic_launcher_background">#444C56</color>
+
     <!-- System -->
     <color name="purple_200">#FFBB86FC</color>
     <color name="purple_500">#FF6200EE</color>

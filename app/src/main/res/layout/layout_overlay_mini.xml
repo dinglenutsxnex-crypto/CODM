@@ -9,6 +9,7 @@
 
     <!-- Layer 1 (bottom): [HS] text — sits BEHIND the GIF so the cyan effect sweeps over it -->
     <TextView
+        android:id="@+id/tv_mini_hs"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|center_horizontal"
@@ -21,7 +22,7 @@
         android:letterSpacing="0.08" />
 
     <!-- Layer 2 (middle): animated GIF with luma-keyed transparency -->
-    <com.mitm.shadowtrack.GifView
+    <com.nexora.hammerscale.GifView
         android:id="@+id/gif_mini"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />

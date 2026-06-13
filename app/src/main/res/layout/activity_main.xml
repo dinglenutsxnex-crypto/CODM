@@ -6,241 +6,108 @@
     android:layout_height="match_parent"
     android:background="@color/bg_primary">
 
-    <com.google.android.material.appbar.AppBarLayout
-        android:id="@+id/app_bar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="@color/bg_secondary"
-        app:elevation="4dp">
-
-        <androidx.appcompat.widget.Toolbar
-            android:id="@+id/toolbar"
-            android:layout_width="match_parent"
-            android:layout_height="?attr/actionBarSize"
-            android:background="@color/bg_secondary"
-            app:titleTextColor="@color/text_primary"
-            app:title="HAMMERSCALE" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingHorizontal="16dp"
-            android:paddingBottom="8dp"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:id="@+id/tv_status"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="○ IDLE — Tap ▶ to start"
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp"
-                android:fontFamily="monospace" />
-
-            <TextView
-                android:id="@+id/tv_traffic"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text=""
-                android:textColor="@color/text_secondary"
-                android:textSize="11sp"
-                android:fontFamily="monospace" />
-
-        </LinearLayout>
-    </com.google.android.material.appbar.AppBarLayout>
-
-    <!-- Waiting state: shown until HANDSHAKE is detected -->
+    <!-- Main content -->
     <LinearLayout
-        android:id="@+id/layout_waiting"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:gravity="center"
-        android:visibility="visible"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+        android:gravity="center">
 
+        <!-- Title -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="[ "
+                android:textColor="#FF8B949E"
+                android:textSize="22sp"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:letterSpacing="0.15" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="HAMMERSCALE"
+                android:textColor="#FF00E5FF"
+                android:textSize="22sp"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:letterSpacing="0.15" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text=" ]"
+                android:textColor="#FF8B949E"
+                android:textSize="22sp"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:letterSpacing="0.15" />
+
+        </LinearLayout>
+
+        <!-- Subtitle -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="[ HAMMERSCALE ]"
-            android:textColor="@color/text_secondary"
-            android:textSize="18sp"
-            android:fontFamily="monospace"
-            android:textStyle="bold"
-            android:letterSpacing="0.15" />
-
-        <TextView
-            android:id="@+id/tv_waiting_sub"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Start VPN and open Shadow Fight 3"
+            android:text="Start VPN and launch SF3"
             android:textColor="@color/text_secondary"
             android:textSize="16sp"
-            android:textStyle="bold"
             android:fontFamily="monospace"
-            android:letterSpacing="0.15"
-            android:layout_marginTop="8dp"
-            android:gravity="center" />
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:layout_marginTop="12dp" />
 
+        <!-- Play Button -->
+        <ImageButton
+            android:id="@+id/btn_play"
+            android:layout_width="120dp"
+            android:layout_height="120dp"
+            android:layout_marginTop="40dp"
+            android:background="@drawable/btn_play_bg"
+            android:src="@drawable/ic_play"
+            android:scaleType="centerInside"
+            android:padding="30dp"
+            android:contentDescription="Start VPN and launch game" />
+
+        <!-- Footer -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center"
-            android:layout_marginTop="8dp">
+            android:layout_marginTop="60dp">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="made by Nexora · "
+                android:text="Made by Nexora · "
                 android:textColor="@color/text_secondary"
-                android:textSize="16sp"
-                android:textStyle="bold"
+                android:textSize="14sp"
                 android:fontFamily="monospace"
-                android:letterSpacing="0.15" />
+                android:letterSpacing="0.1" />
 
             <TextView
                 android:id="@+id/tv_discord_link"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="discord"
+                android:text="Discord"
                 android:textColor="#FF8957E5"
-                android:textSize="16sp"
-                android:textStyle="bold"
+                android:textSize="14sp"
                 android:fontFamily="monospace"
-                android:letterSpacing="0.15"
+                android:textStyle="bold"
+                android:letterSpacing="0.1"
                 android:clickable="true"
                 android:focusable="true" />
 
         </LinearLayout>
 
     </LinearLayout>
-
-    <!-- Game socket view: shown once HANDSHAKE is detected -->
-    <LinearLayout
-        android:id="@+id/layout_socket"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:visibility="gone"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior">
-
-        <!-- Connection header -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="12dp"
-            android:background="@color/bg_secondary">
-
-            <TextView
-                android:id="@+id/tv_live_indicator"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="● LIVE — data streaming"
-                android:textColor="@color/green_active"
-                android:textSize="12sp"
-                android:fontFamily="monospace"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/tv_conn_address"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textColor="@color/text_primary"
-                android:textSize="13sp"
-                android:fontFamily="monospace"
-                android:textStyle="bold"
-                android:text="" />
-
-            <TextView
-                android:id="@+id/tv_conn_id"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textColor="@color/text_secondary"
-                android:textSize="10sp"
-                android:fontFamily="monospace"
-                android:text="" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="2dp">
-
-                <TextView
-                    android:id="@+id/tv_conn_status"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp"
-                    android:fontFamily="monospace"
-                    android:text="" />
-
-                <TextView
-                    android:id="@+id/tv_conn_traffic"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12sp"
-                    android:fontFamily="monospace"
-                    android:text="" />
-
-            </LinearLayout>
-
-        </LinearLayout>
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="@color/divider_color" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="LIVE DATA STREAM"
-            android:textColor="@color/text_secondary"
-            android:textSize="10sp"
-            android:fontFamily="monospace"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="6dp"
-            android:background="@color/bg_secondary"
-            android:letterSpacing="0.15" />
-
-        <TextView
-            android:id="@+id/tv_empty_messages"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Waiting for data…"
-            android:textColor="@color/text_secondary"
-            android:textSize="12sp"
-            android:fontFamily="monospace"
-            android:gravity="center"
-            android:paddingVertical="24dp"
-            android:visibility="visible" />
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/rv_messages"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:paddingBottom="80dp"
-            android:clipToPadding="false" />
-
-    </LinearLayout>
-
-
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fab_toggle_vpn"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="24dp"
-        android:src="@android:drawable/ic_media_play"
-        app:backgroundTint="@color/green_active"
-        app:tint="@color/bg_primary" />
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>
