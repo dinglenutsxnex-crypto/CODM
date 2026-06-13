@@ -559,9 +559,9 @@ object PacketInjector {
         var foundField24 = false
         
         while (pos < params.size) {
-            val tag = params[pos]
-            val fieldNum = (tag shr 3).toInt()
-            val wireType = tag.toInt() and 7
+            val tag = params[pos].toInt()
+            val fieldNum = tag shr 3
+            val wireType = tag and 7
             
             if (fieldNum == 30) {
                 // Skip field[30] (LOSS indicator)
@@ -574,7 +574,7 @@ object PacketInjector {
             if (fieldNum == 24) foundField24 = true
             
             // Copy field as-is
-            result.add(tag)
+            result.add(params[pos].toByte())
             pos++
             
             when (wireType) {
@@ -592,8 +592,8 @@ object PacketInjector {
         
         // If no field[24], add it with WIN data
         if (!foundField24) {
-            val winSubMsg = byteArrayOf(0xc8, 0x03, 0xf9.toByte())  // field[25]=3, field[31]=END GROUP
-            val field24Tag = byteArrayOf(0xc2, winSubMsg.size.toByte())  // field[24] tag + length
+            val winSubMsg = byteArrayOf(0xc8.toByte(), 0x03, (-7).toByte())  // field[25]=3, field[31]=END GROUP (0xf9 = -7 as signed byte)
+            val field24Tag = byteArrayOf(0xc2.toByte(), winSubMsg.size.toByte())  // field[24] tag + length
             result.addAll(field24Tag.toList())
             result.addAll(winSubMsg.toList())
         }
