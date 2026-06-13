@@ -471,47 +471,13 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Duel Auto Win"
+                    android:text="Brawler Auto Win"
                     android:textColor="#FFE6EDF3"
                     android:textSize="13sp"
                     android:fontFamily="monospace" />
 
                 <Switch
                     android:id="@+id/sw_brawler"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:checked="false" />
-
-            </LinearLayout>
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="#FF21262D" />
-
-            <!-- Faction War Auto Win -->
-            <LinearLayout
-                android:id="@+id/row_faction_war"
-                android:layout_width="match_parent"
-                android:layout_height="52dp"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:clickable="true"
-                android:focusable="true"
-                android:background="?android:attr/selectableItemBackground">
-
-                <TextView
-                    android:id="@+id/tv_label_faction_war"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Faction War Auto Win"
-                    android:textColor="#FFE6EDF3"
-                    android:textSize="13sp"
-                    android:fontFamily="monospace" />
-
-                <Switch
-                    android:id="@+id/sw_faction_war"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:checked="false" />

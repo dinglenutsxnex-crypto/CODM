@@ -107,15 +107,6 @@ class TcpHandler(
     fun armBrawlerIntercept()    { brawlerInterceptArmed.set(true) }
     fun disarmBrawlerIntercept() { brawlerInterceptArmed.set(false) }
 
-    // ── Faction War WIN intercept ─────────────────────────────────────────
-    // When armed, the next outbound faction_wars_finish_fight is patched to WIN.
-    // WIN has field[28] present, LOSS has field[31] present.
-    // The patch adds field[28] and removes field[31].
-    private val factionWarInterceptArmed = java.util.concurrent.atomic.AtomicBoolean(false)
-
-    fun armFactionWarIntercept()    { factionWarInterceptArmed.set(true) }
-    fun disarmFactionWarIntercept() { factionWarInterceptArmed.set(false) }
-
     /**
      * Called from parseSf3Frames for every INBOUND complete frame.
      * If [frame] is the server's clan_start_fight response, extracts the round
@@ -306,20 +297,6 @@ class TcpHandler(
                 } else {
                     onMessage(connKey, LiveMessage(LiveMessage.Direction.OUTBOUND,
                         "BRAWLER PATCH FAILED — hex: ${payloadForServer.joinToString(" ") { "%02x".format(it) }}".toByteArray()))
-                }
-            }
-
-            // ── Faction War WIN intercept ──────────────────────────────────
-            // When armed, patches the outbound faction_wars_finish_fight to WIN.
-            // WIN has field[28] present, LOSS has field[31] present.
-            if (factionWarInterceptArmed.get() && GameProtocolParser.tryExtractFactionWarFinish(payloadForServer)) {
-                factionWarInterceptArmed.set(false)
-                val patched = PacketInjector.patchFactionWarFinishToWin(payloadForServer)
-                if (patched != null) {
-                    payloadForServer = patched
-                } else {
-                    onMessage(connKey, LiveMessage(LiveMessage.Direction.OUTBOUND,
-                        "FACTION WAR PATCH FAILED — hex: ${payloadForServer.joinToString(" ") { "%02x".format(it) }}".toByteArray()))
                 }
             }
 

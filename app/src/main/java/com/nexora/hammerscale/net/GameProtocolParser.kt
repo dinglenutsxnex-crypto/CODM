@@ -32,11 +32,10 @@ object GameProtocolParser {
         "refresh_battles", "cheat_generate_battle",
         "clan_refresh_battles", "start_fight", "get_battles",
         "event_battle_start_fight", "event_battle_finish_fight",
-        "clan_start_fight", "clan_finish_fight",
-        "faction_wars_start_fight", "faction_wars_finish_fight"
+        "clan_start_fight", "clan_finish_fight"
     )
 
-    private val BATTLE_START_COMMANDS = setOf("start_fight", "event_battle_start_fight", "clan_start_fight", "faction_wars_start_fight")
+    private val BATTLE_START_COMMANDS = setOf("start_fight", "event_battle_start_fight", "clan_start_fight")
     private val BATTLE_END_COMMANDS   = setOf("finish_fight", "brawler_finish", "event_battle_finish_fight", "clan_finish_fight")
 
     fun parse(data: ByteArray, direction: LiveMessage.Direction): GameEvent? {
@@ -45,10 +44,7 @@ object GameProtocolParser {
         // ── Proto parsing first (most accurate — resolves varints properly) ────
         val proto = extractPayload(data)
         if (proto != null) {
-            val protoResult = try { parseEnvelope(proto, direction) } catch (e: Exception) { 
-                android.util.Log.e("GameProtocolParser", "parseEnvelope exception: ${e.message}")
-                null 
-            }
+            val protoResult = try { parseEnvelope(proto, direction) } catch (_: Exception) { null }
             if (protoResult != null) return protoResult
         }
 
@@ -67,12 +63,10 @@ object GameProtocolParser {
         // Check event_battle_start_fight FIRST because start_fight is a substring of it —
         // a set iteration order is undefined so we'd risk misclassifying the high-priority
         // hero fight as a low-priority clan fight if start_fight matched first.
-        // Also check faction_wars_start_fight before start_fight since it contains "start_fight".
         if (isOut) {
             val cmd = when {
-                text.contains("event_battle_start_fight")  -> "event_battle_start_fight"
-                text.contains("faction_wars_start_fight")  -> "faction_wars_start_fight"
-                text.contains("clan_start_fight")          -> "clan_start_fight"
+                text.contains("event_battle_start_fight") -> "event_battle_start_fight"
+                text.contains("clan_start_fight")         -> "clan_start_fight"
                 text.contains("start_fight")              -> "start_fight"
                 else                                      -> null
             }
@@ -82,16 +76,9 @@ object GameProtocolParser {
             }
         }
 
-        // Check faction_wars_finish_fight before clan_finish_fight since it contains "finish_fight".
-        // Check clan_finish_fight before finish_fight since clan_finish_fight contains "finish_fight"
+        // Check clan_finish_fight before finish_fight — clan_finish_fight contains "finish_fight"
         // as a substring so order matters to avoid misclassification.
-        val endCmdOrdered = listOf(
-            "faction_wars_finish_fight",
-            "clan_finish_fight",
-            "event_battle_finish_fight",
-            "brawler_finish",
-            "finish_fight"
-        )
+        val endCmdOrdered = listOf("clan_finish_fight", "event_battle_finish_fight", "brawler_finish", "finish_fight")
         for (cmd in endCmdOrdered) {
             if (text.contains(cmd)) {
                 val id = extractIdFromRawText(text)
@@ -190,39 +177,6 @@ object GameProtocolParser {
                     val payload = rawDeflate(data.copyOfRange(pos + 5, pos + 5 + compLen)) ?: break
                     val cmd = (readProtoFields(payload)[2] as? ByteArray)?.toString(Charsets.UTF_8)
                     if (cmd == "brawler_finish") return true
-                    pos += 5 + compLen
-                }
-                else -> pos++
-            }
-        }
-        return false
-    }
-
-    /**
-     * Returns true if [data] is a complete outbound faction_wars_finish_fight SF3 frame.
-     * Used by the faction war WIN intercept in TcpHandler to identify the packet to patch.
-     */
-    fun tryExtractFactionWarFinish(data: ByteArray): Boolean {
-        var pos = 0
-        while (pos < data.size) {
-            val t = data[pos].toInt() and 0xFF
-            when (t) {
-                0x01 -> {
-                    if (pos + 2 > data.size) break
-                    val len = data[pos + 1].toInt() and 0xFF
-                    if (pos + 2 + len > data.size) break
-                    val payload = data.copyOfRange(pos + 2, pos + 2 + len)
-                    val cmd = (readProtoFields(payload)[2] as? ByteArray)?.toString(Charsets.UTF_8)
-                    if (cmd == "faction_wars_finish_fight") return true
-                    pos += 2 + len
-                }
-                0x02 -> {
-                    if (pos + 5 > data.size) break
-                    val compLen = ByteBuffer.wrap(data, pos + 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
-                    if (compLen <= 0 || pos + 5 + compLen > data.size) break
-                    val payload = rawDeflate(data.copyOfRange(pos + 5, pos + 5 + compLen)) ?: break
-                    val cmd = (readProtoFields(payload)[2] as? ByteArray)?.toString(Charsets.UTF_8)
-                    if (cmd == "faction_wars_finish_fight") return true
                     pos += 5 + compLen
                 }
                 else -> pos++
@@ -355,15 +309,6 @@ object GameProtocolParser {
                 parseBrawlerFinish(params)
             }
 
-            command == "faction_wars_finish_fight" && isOut -> {
-                parseFactionWarFinish(params)
-            }
-
-            command == "faction_wars_finish_fight" && !isOut -> {
-                // Server response - confirm the faction war result
-                GameEvent.WinConfirmed("faction_war")
-            }
-
             command in BATTLE_END_COMMANDS && isOut -> {
                 val battleId = params?.let { extractBattleIdDirect(it) }
                 GameEvent.BattleCommand(command, battleId, true)
@@ -436,34 +381,6 @@ object GameProtocolParser {
             GameEvent.BrawlerFinished(result, wonRounds, totalRounds)
         } catch (_: Exception) {
             GameEvent.BattleCommand("brawler_finish", null, true)
-        }
-    }
-
-    /**
-     * Parses an outbound faction_wars_finish_fight params blob and returns a [GameEvent.FactionWarFinished].
-     *
-     * faction_wars_finish_fight inner proto structure:
-     *   field[0]  fixed64 = some ID
-     *   field[24] bytes   = WIN indicator (sub-message with field[25]=rounds, field[31]=END GROUP)
-     *   field[30] varint  = 237 (LOSS indicator, no field[24])
-     *
-     * Detection: WIN = has field[24], LOSS = has field[30]
-     *
-     * Falls back to [GameEvent.BattleCommand] if params are null or unparseable.
-     */
-    private fun parseFactionWarFinish(params: ByteArray?): GameEvent {
-        if (params == null) return GameEvent.BattleCommand("faction_wars_finish_fight", null, true)
-        return try {
-            val inner = readProtoFields(params)
-            val hasField24 = inner.containsKey(24)  // WIN indicator
-            val hasField30 = inner.containsKey(30)  // LOSS indicator
-            
-            val result = if (hasField24) "WIN" else "LOSS"
-            val wonRounds = if (hasField24) 3 else 0  // WIN = 3 rounds, LOSS = 0 rounds
-            
-            GameEvent.FactionWarFinished(result, wonRounds)
-        } catch (_: Exception) {
-            GameEvent.BattleCommand("faction_wars_finish_fight", null, true)
         }
     }
 

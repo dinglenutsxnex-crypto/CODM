@@ -29,12 +29,6 @@ sealed class GameEvent {
      * @param totalRounds inner proto field[5] varint (0 if absent — e.g. on LOSS)
      */
     data class BrawlerFinished(val result: String, val wonRounds: Int, val totalRounds: Int) : GameEvent()
-    /**
-     * Fired for outbound faction_wars_finish_fight packets.
-     * @param wonRounds  Number of rounds won (0-3)
-     * @param result     "WIN" or "LOSS"
-     */
-    data class FactionWarFinished(val result: String, val wonRounds: Int) : GameEvent()
 
     val label: String get() = when (this) {
         is HandshakeOut    -> ">> HANDSHAKE  ${serverName}"
@@ -43,17 +37,9 @@ sealed class GameEvent {
         is LoginIn         -> "<< LOGIN OK"
         is Command         -> "${if (isOutbound) ">>" else "<<"} ${name}"
         is BattleCommand   -> "${if (isOutbound) ">>" else "<<"} ${name}${if (battleId != null) "  #$battleId" else ""}"
-        is BattleStarted   -> {
-            val typeLabel = when {
-                commandName == "event_battle_start_fight"  -> "[FIGHT]"
-                commandName?.contains("faction_wars") == true -> "[FACTION WAR]"
-                else                                         -> "[${commandName ?: "unknown"}]"
-            }
-            "!! BATTLE STARTED  #${battleId} $typeLabel"
-        }
+        is BattleStarted   -> "!! BATTLE STARTED  #${battleId}${if (commandName == "event_battle_start_fight") " [FIGHT]" else " [clan]"}"
         is WinConfirmed    -> "## WIN CONFIRMED  #${battleId}"
         is BrawlerFinished -> ">> BRAWLER FINISH  ${result}  ${wonRounds}/${totalRounds}"
-        is FactionWarFinished -> ">> FACTION WAR FINISH  ${result}  ${wonRounds}/3"
     }
 
     val detail: String get() = when (this) {
@@ -66,6 +52,5 @@ sealed class GameEvent {
         is BattleStarted   -> "battle_id: ${battleId}"
         is WinConfirmed    -> "battle_id: ${battleId}  /  server confirmed"
         is BrawlerFinished -> "result: ${result}  wonRounds: ${wonRounds}  totalRounds: ${totalRounds}"
-        is FactionWarFinished -> "result: ${result}  wonRounds: ${wonRounds}/3"
     }
 }

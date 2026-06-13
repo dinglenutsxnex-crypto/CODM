@@ -201,11 +201,8 @@ class ConnectionViewModel : ViewModel() {
                         is GameEvent.BrawlerFinished -> {
                             _currentBattle.postValue(null)
                         }
-                        is GameEvent.FactionWarFinished -> {
-                            _currentBattle.postValue(null)
-                        }
                         is GameEvent.BattleCommand -> {
-                            if (event.name in setOf("finish_fight", "event_battle_finish_fight", "clan_finish_fight", "faction_wars_finish_fight")) {
+                            if (event.name in setOf("finish_fight", "event_battle_finish_fight", "clan_finish_fight")) {
                                 _currentBattle.postValue(null)
                             }
                             // SF3 opens a NEW TCP connection for event_battle_finish_fight —
