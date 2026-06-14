@@ -82,7 +82,8 @@ class TrafficVpnService : VpnService() {
                     viewModel.updateConnectionStatus(id, status)
                 },
                 onWebSocket = { id -> viewModel.markAsWebSocket(id) },
-                onClanRounds = { rounds -> viewModel.setClanRounds(rounds) }
+                onClanRounds = { rounds -> viewModel.setClanRounds(rounds) },
+                onBattleSeq = { seq -> viewModel.setBattleSeq(seq) }
             )
 
             udpHandler = UdpHandler(

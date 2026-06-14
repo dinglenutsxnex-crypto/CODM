@@ -53,7 +53,8 @@ class TcpHandler(
     private val onMessage: (String, LiveMessage) -> Unit,
     private val onStatusChange: (String, ConnectionStatus) -> Unit,
     private val onWebSocket: (String) -> Unit = {},
-    private val onClanRounds: (Int) -> Unit = {}
+    private val onClanRounds: (Int) -> Unit = {},
+    private val onBattleSeq: (Int) -> Unit = {}
 ) {
     private val connections = ConcurrentHashMap<String, TcpConnState>()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -137,6 +138,19 @@ class TcpHandler(
         clanInterceptRounds.set(rounds)
         clanInterceptArmed.set(true)
         onClanRounds(rounds)
+    }
+
+    /**
+     * Called for every inbound frame. If this is the server's event_battle_start_fight
+     * response, extracts the 0-indexed sub-battle sequence number (field[3] in params)
+     * and reports it via [onBattleSeq].
+     *
+     * field[3] absent → sub-battle 0 (first fight or single-fight battle)
+     * field[3] = N   → sub-battle N (0-indexed)
+     */
+    private fun sniffEventBattleStart(frame: ByteArray) {
+        val seq = GameProtocolParser.extractBattleSeqFromServerStart(frame) ?: return
+        onBattleSeq(seq)
     }
 
     fun handlePacket(packet: ParsedPacket) {
@@ -525,7 +539,10 @@ class TcpHandler(
                     val frame01 = raw.copyOfRange(pos, pos + 2 + len)
                     val cmdName = extractCommandName(frame01)
                     onMessage(connId, makeMessage(dir, frame01, cmdName))
-                    if (dir == LiveMessage.Direction.INBOUND) sniffClanStart(frame01)
+                    if (dir == LiveMessage.Direction.INBOUND) {
+                        sniffClanStart(frame01)
+                        sniffEventBattleStart(frame01)
+                    }
                     pos += 2 + len
                 }
                 0x02 -> {
@@ -550,7 +567,10 @@ class TcpHandler(
                             val frame02 = raw.copyOfRange(pos, pos + 5 + compLen)
                             val cmdName = extractCommandName(frame02)
                             onMessage(connId, makeMessage(dir, frame02, cmdName))
-                            if (dir == LiveMessage.Direction.INBOUND) sniffClanStart(frame02)
+                            if (dir == LiveMessage.Direction.INBOUND) {
+                                sniffClanStart(frame02)
+                                sniffEventBattleStart(frame02)
+                            }
                             pos += 5 + compLen
                         }
                     }

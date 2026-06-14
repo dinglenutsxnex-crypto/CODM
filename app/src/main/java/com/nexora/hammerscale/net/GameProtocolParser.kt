@@ -153,6 +153,32 @@ object GameProtocolParser {
     }
 
     /**
+     * Parses the server's inbound event_battle_start_fight response and returns the
+     * 0-indexed sub-battle sequence number from params field[3].
+     *
+     * Confirmed from captures (4-battle skeletal event):
+     *   fight_107: field[3] absent → sub-battle 0  (first fight)
+     *   fight_141: field[3] = 1   → sub-battle 1
+     *   fight_147: field[3] = 2   → sub-battle 2
+     *   fight_154: field[3] = 3   → sub-battle 3
+     *
+     * Returns null if [data] is not an inbound event_battle_start_fight or cannot be parsed.
+     * Returns 0 when field[3] is absent (first sub-battle in a sequence, or single-fight battle).
+     */
+    fun extractBattleSeqFromServerStart(data: ByteArray): Int? {
+        return try {
+            val payload = extractPayload(data) ?: return null
+            val outer   = readProtoFields(payload)
+            val cmd     = (outer[2] as? ByteArray)?.toString(Charsets.UTF_8) ?: return null
+            if (cmd != "event_battle_start_fight") return null
+            val params  = outer[3] as? ByteArray ?: return null
+            val pFields = readProtoFields(params)
+            // field[3] = 0-indexed sub-battle number; absent on the very first fight
+            ((pFields[3] as? Long)?.toInt() ?: 0)
+        } catch (_: Exception) { null }
+    }
+
+    /**
      * Returns true if [data] is a complete outbound brawler_finish SF3 frame.
      * Used by the brawler WIN intercept in TcpHandler to identify the packet to patch.
      */

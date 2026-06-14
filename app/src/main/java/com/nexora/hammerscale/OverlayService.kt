@@ -149,6 +149,41 @@ class OverlayService : Service() {
         }
     }
 
+    // ── Battle sequence observer ───────────────────────────────────────────
+    // Fires when the server's inbound event_battle_start_fight is received.
+    // seq = 0-indexed sub-battle number (field[3] in params; absent = 0).
+    //
+    // For multi-round battles (battles.json rounds > 1): update roundsToWin from
+    // the JSON lookup for this battle and show sub-battle progress in the overlay.
+    // For single-round battles: skip — roundsToWin is already 1 from the JSON lookup,
+    // no server shenanigans needed.
+    private val battleSeqObserver = Observer<Int?> { seq ->
+        if (seq == null) return@Observer
+        val id = currentBattleId ?: return@Observer
+        val totalRounds = BattleConfig.roundsFor(id) ?: return@Observer
+
+        if (totalRounds <= 1) {
+            // Single-round battle — rounds already set correctly from JSON, nothing to do.
+            return@Observer
+        }
+
+        // Multi-round battle: seq is the 0-indexed sub-battle (0 = first fight).
+        // roundsToWin from battles.json applies to each individual fight equally.
+        roundsToWin = totalRounds
+        if (interceptIsArmed) {
+            TrafficVpnService.instance?.armIntercept(roundsToWin)
+        }
+
+        // Update the rounds display to show sub-battle progress: "3 · fight 2/4"
+        overlayView?.let { v ->
+            v.findViewById<TextView>(R.id.tv_rounds_value)?.text = totalRounds.toString()
+            v.findViewById<TextView>(R.id.tv_rounds_label)?.let { label ->
+                label.text = "rounds · fight ${seq + 1}/$totalRounds  "
+                label.setTextColor(Color.parseColor("#FF58A6FF"))
+            }
+        }
+    }
+
     // ── Raid fight observer ────────────────────────────────────────────────
     private val raidFightObserver = Observer<Boolean> { active ->
         val wasArmed = raidInterceptArmed   // capture before updateRaidPanel resets it
@@ -527,6 +562,7 @@ class OverlayService : Service() {
         AppState.viewModel.gameEvents.observeForever(gameEventsForTypeObserver)
         AppState.viewModel.currentBattle.observeForever(battleObserver)
         AppState.viewModel.clanRounds.observeForever(clanRoundsObserver)
+        AppState.viewModel.battleSeq.observeForever(battleSeqObserver)
         AppState.viewModel.raidFightActive.observeForever(raidFightObserver)
         
         BattleConfig.loadAsync(
@@ -975,6 +1011,7 @@ class OverlayService : Service() {
         AppState.viewModel.gameEvents.removeObserver(gameEventsForTypeObserver)
         AppState.viewModel.currentBattle.removeObserver(battleObserver)
         AppState.viewModel.clanRounds.removeObserver(clanRoundsObserver)
+        AppState.viewModel.battleSeq.removeObserver(battleSeqObserver)
         AppState.viewModel.raidFightActive.removeObserver(raidFightObserver)
         pendingArmJob?.cancel()
         serviceScope.cancel()

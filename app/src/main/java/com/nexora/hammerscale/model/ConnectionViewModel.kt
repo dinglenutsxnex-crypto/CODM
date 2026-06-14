@@ -54,6 +54,12 @@ class ConnectionViewModel : ViewModel() {
     private val _clanRounds = MutableLiveData<Int?>(null)
     val clanRounds: LiveData<Int?> = _clanRounds
 
+    // Sub-battle sequence index from the server's inbound event_battle_start_fight response.
+    // 0 = first fight (field[3] absent), N = Nth fight (0-indexed). Null until first sniff.
+    // Reset on clearAll() and on each new BattleStarted so stale values don't persist.
+    private val _battleSeq = MutableLiveData<Int?>(null)
+    val battleSeq: LiveData<Int?> = _battleSeq
+
     // True between outbound raid_fight_start and inbound raid_fight_finish.
     // Drives the ARM MAX DMG button visibility in the overlay.
     private val _raidFightActive = MutableLiveData<Boolean>(false)
@@ -69,6 +75,15 @@ class ConnectionViewModel : ViewModel() {
      */
     fun setClanRounds(rounds: Int) {
         _clanRounds.postValue(rounds)
+    }
+
+    /**
+     * Set the sub-battle sequence index from the server's inbound event_battle_start_fight.
+     * 0 = first fight (field[3] absent), N = Nth fight (0-indexed).
+     * Called from TcpHandler on each inbound server response — fires before the user can arm.
+     */
+    fun setBattleSeq(seq: Int) {
+        _battleSeq.postValue(seq)
     }
 
     data class Stats(
@@ -180,6 +195,9 @@ class ConnectionViewModel : ViewModel() {
                                 val isHeroFight = event.commandName == "event_battle_start_fight"
                                 if (isHeroFight || _currentBattle.value == null) {
                                     _currentBattle.postValue(BattleState(event.battleId))
+                                    // Reset sub-battle seq so stale index from a previous multi-
+                                    // battle run doesn't linger until the server responds.
+                                    if (isHeroFight) _battleSeq.postValue(null)
                                     // Record WHICH connection carried this battle packet — may
                                     // differ from gameSocketId if SF3 uses separate conns.
                                     _battleSocketId.postValue(id)
@@ -238,6 +256,7 @@ class ConnectionViewModel : ViewModel() {
         _gameEvents.postValue(emptyList())
         _currentBattle.postValue(null)
         _clanRounds.postValue(null)
+        _battleSeq.postValue(null)
         _raidFightActive.postValue(false)
         publishUpdate()
     }
