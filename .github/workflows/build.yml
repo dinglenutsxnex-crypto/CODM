@@ -7,11 +7,14 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Release APK
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,30 +32,12 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+      - name: Build Signed Release APK
+        run: ./gradlew assembleRelease --no-daemon
 
-      - name: Build Release APK
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
-
-      - name: Upload Release APK
+      - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: shadowtrack-release
+          name: hammerscale-release
           path: app/build/outputs/apk/release/app-release.apk
-          retention-days: 1
-
-      - name: Create GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: app/build/outputs/apk/release/app-release.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          retention-days: 30

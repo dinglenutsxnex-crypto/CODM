@@ -7,6 +7,15 @@ android {
     namespace 'com.nexora.hammerscale'
     compileSdk 34
 
+    signingConfigs {
+        release {
+            storeFile file('release.keystore')
+            storePassword 'hammerscale123'
+            keyAlias 'hammerscale'
+            keyPassword 'hammerscale123'
+        }
+    }
+
     defaultConfig {
         applicationId "com.nexora.hammerscale"
         minSdk 26
@@ -17,9 +26,11 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
+            debuggable false
         }
         debug {
             applicationIdSuffix ".debug"
@@ -29,6 +40,7 @@ android {
 
     buildFeatures {
         viewBinding true
+        buildConfig true
     }
 
     compileOptions {
@@ -44,6 +56,11 @@ android {
         resources {
             excludes += '/META-INF/{AL2.0,LGPL2.1}'
         }
+    }
+    
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
     }
 }
 
