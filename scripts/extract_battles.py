@@ -248,16 +248,27 @@ def _parse_skeleton_key_rounds(text: str) -> dict:
 def _infer_rounds_from_skin(skin_text: str, key: str) -> int:
     """Infer RoundsToWin for a skeleton key that has no explicit value in the
     skeleton JS file.  Reads the skin data block for that key to find:
-      • roundCountSettings.roundsToWins → use roundsToWins[0]
+      • roundCountSettings.roundsToWins → use max(roundsToWins)
+        (the last element is always the boss-fight value; for [2,2,3] we want 3)
       • classic fights count N          → ceil(N / 2)
-    Falls back to 2."""
+    Falls back to 2.
+
+    Some skins use a different key name in the skin data block than in the
+    prepareArchBattle call (e.g. 'level_3_as3_boss' vs 'level3as3boss' or
+    'level_3As3Boss').  Both forms are tried by normalising underscores and case."""
+    # First try the exact key
     m = re.search(re.escape(key) + r'\s*:\s*\{', skin_text)
+    if not m:
+        # Try with underscores stripped + case-insensitive
+        normalised = key.replace('_', '').lower()
+        m = re.search(re.escape(normalised) + r'\s*:\s*\{', skin_text, re.IGNORECASE)
     if not m:
         return 2
     chunk = skin_text[m.start(): min(len(skin_text), m.start() + 1500)]
-    rcs = re.search(r'roundsToWins\s*:\s*\[(\d+)', chunk)
+    rcs = re.search(r'roundsToWins\s*:\s*\[([^\]]+)\]', chunk)
     if rcs:
-        return int(rcs.group(1))
+        vals = [int(x.strip()) for x in rcs.group(1).split(',') if x.strip().isdigit()]
+        return max(vals) if vals else 2
     fights_m = re.search(r'fights\s*:\s*\{([^}]+)\}', chunk)
     if fights_m:
         n = len(re.findall(r'"\d+"', fights_m.group(1)))

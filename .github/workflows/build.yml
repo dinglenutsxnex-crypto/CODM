@@ -29,6 +29,28 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Encrypt battles data into APK resource
+        run: |
+          pip install pycryptodome -q
+          python3 - <<'PYEOF'
+          from Crypto.Cipher import AES
+          import json
+          key = bytes.fromhex("08050674cc9ab867197f0cad55a770ca")
+          nonce = bytes.fromhex("653e0715236e0f734f1ebf64228b322d")[:8]
+          with open('data/battles.json', 'rb') as f:
+              data = f.read()
+          cipher = AES.new(key, AES.MODE_CTR, nonce=nonce, initial_value=0)
+          enc = cipher.encrypt(data)
+          with open('app/src/main/res/raw/battles.enc', 'wb') as f:
+              f.write(enc)
+          print(f"Encrypted {len(data)} bytes -> res/raw/battles.enc")
+          # Verify
+          cipher2 = AES.new(key, AES.MODE_CTR, nonce=nonce, initial_value=0)
+          dec = cipher2.decrypt(enc)
+          d = json.loads(dec)
+          print(f"Verified: {len(d['battles'])} battles, 3101132={d['battles']['3101132']}")
+          PYEOF
+
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 

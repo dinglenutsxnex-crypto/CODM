@@ -11,6 +11,10 @@
 *.apk
 *.aab
 
+# Battle data is encrypted into res/raw/ by the build workflow
+app/src/main/res/raw/battles.enc
+app/src/main/assets/battles.json
+
 # Kotlin
 *.class
 

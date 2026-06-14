@@ -529,7 +529,8 @@ class OverlayService : Service() {
         AppState.viewModel.clanRounds.observeForever(clanRoundsObserver)
         AppState.viewModel.raidFightActive.observeForever(raidFightObserver)
         
-        BattleConfig.fetchAsync(
+        BattleConfig.loadAsync(
+            resources,
             onLoaded = { count, version ->
                 Toast.makeText(this, "BattleConfig OK: $count battles (v$version)", Toast.LENGTH_LONG).show()
                 autoSetBattleId = null
