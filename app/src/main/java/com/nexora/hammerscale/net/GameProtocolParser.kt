@@ -171,10 +171,19 @@ object GameProtocolParser {
             val outer   = readProtoFields(payload)
             val cmd     = (outer[2] as? ByteArray)?.toString(Charsets.UTF_8) ?: return null
             if (cmd != "event_battle_start_fight") return null
-            val params  = outer[3] as? ByteArray ?: return null
-            val pFields = readProtoFields(params)
-            // field[3] = 0-indexed sub-battle number; absent on the very first fight
-            ((pFields[3] as? Long)?.toInt() ?: 0)
+            // field[3] (sub-battle index) is NOT directly in outer[3] (the raw params blob).
+            // It lives at outer[3] → [2] → [1] — the battle config object confirmed from captures:
+            //   fight_107: field[3] absent → 0 (first)
+            //   fight_141: field[3] = 1   → second
+            //   fight_147: field[3] = 2   → third
+            //   fight_154: field[3] = 3   → fourth
+            val params   = outer[3] as? ByteArray ?: return null
+            val f3       = readProtoFields(params)
+            val bigBlob  = f3[2]    as? ByteArray ?: return null
+            val bcFields = readProtoFields(bigBlob)
+            val bc       = bcFields[1] as? ByteArray ?: return null
+            val subIdx   = (readProtoFields(bc)[3] as? Long)?.toInt() ?: 0
+            subIdx
         } catch (_: Exception) { null }
     }
 
@@ -333,14 +342,18 @@ object GameProtocolParser {
                 val detail = buildString {
                     if (params != null) {
                         try {
-                            val pf = readProtoFields(params)
+                            // Navigate to the battle config object: params[2][1]
+                            val f3      = readProtoFields(params)
+                            val bigBlob = f3[2] as? ByteArray
+                            val bc      = bigBlob?.let { readProtoFields(it)[1] as? ByteArray }
+                            val bcFields = bc?.let { readProtoFields(it) } ?: emptyMap()
                             // field[3] = 0-indexed sub-battle number (absent on fight 0)
-                            val seq = (pf[3] as? Long)?.toInt()
+                            val seq = (bcFields[3] as? Long)?.toInt()
                             append("seq=${seq ?: 0}")
                             if (seq == null) append("  (field[3] absent → first fight)")
                             else             append("  (fight ${seq + 1})")
-                            // Dump any other varint/string fields for debugging
-                            pf.forEach { (fn, v) ->
+                            // Dump scalar fields from the battle config for debugging
+                            bcFields.forEach { (fn, v) ->
                                 if (fn == 3) return@forEach   // already shown as seq
                                 when (v) {
                                     is Long      -> append("\nfield[$fn]=$v")
