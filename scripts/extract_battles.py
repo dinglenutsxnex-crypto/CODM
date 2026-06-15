@@ -17,10 +17,15 @@ Output format (data/battles.json):
   "battles": {
     "3002601": 3,
     "3000602": 3,
+    "3101111": [2, 2, 3],
     ...
   }
 }
-Keys are battle IDs (strings), values are RoundsToWin integers.
+Keys are battle IDs (strings).
+Values are either:
+  - int   → single-fight battle, RoundsToWin applies to the whole fight
+  - list  → multi-fight (skeleton) battle; each element is RoundsToWin for
+             that sub-battle index (0-indexed, matching server field[3]).
 """
 
 import argparse
@@ -245,13 +250,14 @@ def _parse_skeleton_key_rounds(text: str) -> dict:
     return result
 
 
-def _infer_rounds_from_skin(skin_text: str, key: str) -> int:
+def _infer_rounds_from_skin(skin_text: str, key: str):
     """Infer RoundsToWin for a skeleton key that has no explicit value in the
     skeleton JS file.  Reads the skin data block for that key to find:
-      • roundCountSettings.roundsToWins → use max(roundsToWins)
-        (the last element is always the boss-fight value; for [2,2,3] we want 3)
-      • classic fights count N          → ceil(N / 2)
-    Falls back to 2.
+      • roundCountSettings.roundsToWins → if multiple values, return the full list
+        (each element is the rounds-to-win for that sub-battle index, e.g. [2,2,3])
+        if a single value, return it as int.
+      • classic fights count N → ceil(N / 2) as int
+    Falls back to 2 (int).
 
     Some skins use a different key name in the skin data block than in the
     prepareArchBattle call (e.g. 'level_3_as3_boss' vs 'level3as3boss' or
@@ -268,7 +274,11 @@ def _infer_rounds_from_skin(skin_text: str, key: str) -> int:
     rcs = re.search(r'roundsToWins\s*:\s*\[([^\]]+)\]', chunk)
     if rcs:
         vals = [int(x.strip()) for x in rcs.group(1).split(',') if x.strip().isdigit()]
-        return max(vals) if vals else 2
+        if len(vals) > 1:
+            return vals   # Multi-fight: full array, one entry per sub-battle
+        elif len(vals) == 1:
+            return vals[0]
+        return 2
     fights_m = re.search(r'fights\s*:\s*\{([^}]+)\}', chunk)
     if fights_m:
         n = len(re.findall(r'"\d+"', fights_m.group(1)))

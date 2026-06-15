@@ -153,32 +153,33 @@ class OverlayService : Service() {
     // Fires when the server's inbound event_battle_start_fight is received.
     // seq = 0-indexed sub-battle number (field[3] in params; absent = 0).
     //
-    // For multi-round battles (battles.json rounds > 1): update roundsToWin from
-    // the JSON lookup for this battle and show sub-battle progress in the overlay.
-    // For single-round battles: skip — roundsToWin is already 1 from the JSON lookup,
-    // no server shenanigans needed.
+    // For multi-fight skeleton battles (battles.json value is an array):
+    //   Use seq as the index into the array to get the rounds-to-win for THIS
+    //   specific sub-battle, then update roundsToWin and the overlay display.
+    //
+    // For single-fight battles (battles.json value is an int):
+    //   Skip entirely — roundsToWin is already set correctly from the JSON lookup
+    //   in updateEventsPanel(); no server packet analysis needed.
     private val battleSeqObserver = Observer<Int?> { seq ->
         if (seq == null) return@Observer
         val id = currentBattleId ?: return@Observer
-        val totalRounds = BattleConfig.roundsFor(id) ?: return@Observer
 
-        if (totalRounds <= 1) {
-            // Single-round battle — rounds already set correctly from JSON, nothing to do.
-            return@Observer
-        }
+        // Only act on multi-fight (skeleton) battles
+        if (!BattleConfig.isMultiFight(id)) return@Observer
 
-        // Multi-round battle: seq is the 0-indexed sub-battle (0 = first fight).
-        // roundsToWin from battles.json applies to each individual fight equally.
-        roundsToWin = totalRounds
+        val roundsForThisFight = BattleConfig.roundsFor(id, seq) ?: return@Observer
+        val totalFights        = BattleConfig.totalFightsFor(id)
+
+        roundsToWin = roundsForThisFight
         if (interceptIsArmed) {
             TrafficVpnService.instance?.armIntercept(roundsToWin)
         }
 
-        // Update the rounds display to show sub-battle progress: "3 · fight 2/4"
+        // Update overlay: show per-fight round count and progress, e.g. "2 · fight 1/4"
         overlayView?.let { v ->
-            v.findViewById<TextView>(R.id.tv_rounds_value)?.text = totalRounds.toString()
+            v.findViewById<TextView>(R.id.tv_rounds_value)?.text = roundsForThisFight.toString()
             v.findViewById<TextView>(R.id.tv_rounds_label)?.let { label ->
-                label.text = "rounds · fight ${seq + 1}/$totalRounds  "
+                label.text = "rounds · fight ${seq + 1}/$totalFights  "
                 label.setTextColor(Color.parseColor("#FF58A6FF"))
             }
         }
