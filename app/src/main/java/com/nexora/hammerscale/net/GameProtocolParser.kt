@@ -327,8 +327,40 @@ object GameProtocolParser {
             }
 
             command in BATTLE_START_COMMANDS && !isOut -> {
-                // Server echo — log as a generic command, do NOT emit BattleStarted
-                GameEvent.Command(command, false)
+                // Server echo of event_battle_start_fight / start_fight.
+                // Parse params to extract the sub-battle sequence index (field[3])
+                // and any other interesting fields so they appear in the dev log.
+                val detail = buildString {
+                    if (params != null) {
+                        try {
+                            val pf = readProtoFields(params)
+                            // field[3] = 0-indexed sub-battle number (absent on fight 0)
+                            val seq = (pf[3] as? Long)?.toInt()
+                            append("seq=${seq ?: 0}")
+                            if (seq == null) append("  (field[3] absent → first fight)")
+                            else             append("  (fight ${seq + 1})")
+                            // Dump any other varint/string fields for debugging
+                            pf.forEach { (fn, v) ->
+                                if (fn == 3) return@forEach   // already shown as seq
+                                when (v) {
+                                    is Long      -> append("\nfield[$fn]=$v")
+                                    is ByteArray -> {
+                                        val s = v.toString(Charsets.UTF_8)
+                                        if (s.all { it.isLetterOrDigit() || it == '_' || it == '-' || it == '.' })
+                                            append("\nfield[$fn]=\"$s\"")
+                                        else
+                                            append("\nfield[$fn]=bytes(${v.size})")
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {
+                            append("(parse error)")
+                        }
+                    } else {
+                        append("(no params)")
+                    }
+                }
+                GameEvent.Command(command, false, detail)
             }
 
             command == "brawler_finish" && isOut -> {

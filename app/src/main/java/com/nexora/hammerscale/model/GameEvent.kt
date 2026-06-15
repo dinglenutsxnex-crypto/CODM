@@ -13,7 +13,7 @@ sealed class GameEvent {
     data class HandshakeIn(val sessionToken: String) : GameEvent()
     data class LoginOut(val guid: String, val password: String) : GameEvent()
     class LoginIn : GameEvent()
-    data class Command(val name: String, val isOutbound: Boolean) : GameEvent()
+    data class Command(val name: String, val isOutbound: Boolean, val extraDetail: String = "") : GameEvent()
     data class BattleCommand(val name: String, val battleId: String?, val isOutbound: Boolean) : GameEvent()
     /**
      * @param commandName The raw SF3 command that triggered this event.
@@ -47,7 +47,7 @@ sealed class GameEvent {
         is HandshakeIn     -> ""
         is LoginOut        -> "guid: ${guid.take(18)}...\npass: ${password}"
         is LoginIn         -> ""
-        is Command         -> ""
+        is Command         -> extraDetail
         is BattleCommand   -> if (battleId != null) "battle: $battleId" else ""
         is BattleStarted   -> "battle_id: ${battleId}"
         is WinConfirmed    -> "battle_id: ${battleId}  /  server confirmed"
