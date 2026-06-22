@@ -63,8 +63,11 @@ class OverlayService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Delayed auto-arm job — cancelled if battle ends before the 3-sec window fires.
+    // Delayed auto-arm job for event/clan battles — cancelled if battle ends before the 3-sec window fires.
     private var pendingArmJob: Job? = null
+
+    // Separate arm job for brawler — kept isolated so event/clan battle events cannot cancel it.
+    private var pendingBrawlerArmJob: Job? = null
 
     private var vmEventsCursor = 0
 
@@ -235,16 +238,13 @@ class OverlayService : Service() {
             }
             is GameEvent.BrawlerFinished -> {
                 val wasWin = last.result == "WIN"
+                pendingBrawlerArmJob?.cancel()
+                pendingBrawlerArmJob = null
                 brawlerBattleActive = false
                 disarmBrawlerIntercept()
                 updateBrawlerPanel()
                 updateUserModeBrawlerLabel()
                 if (isUserMode && userBrawlerEnabled && wasWin) flashLabelGreen(R.id.tv_label_brawler)
-                pendingArmJob?.cancel()
-                pendingArmJob = null
-                activeBattleType = BattleType.NONE
-                disarmBattleIntercept()
-                updateUserModeBattleLabels()
             }
             is GameEvent.BattleCommand -> {
                 if (last.name in setOf("finish_fight", "event_battle_finish_fight", "clan_finish_fight")) {
@@ -259,14 +259,17 @@ class OverlayService : Service() {
                     updateBrawlerPanel()
                     updateUserModeBrawlerLabel()
                     if (userBrawlerEnabled) {
-                        pendingArmJob?.cancel()
-                        pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                            delay(3_000)
+                        // Use a SEPARATE job so event/clan battle events cannot cancel this arm.
+                        // No delay needed — brawler has no roundsToWin config to wait for.
+                        pendingBrawlerArmJob?.cancel()
+                        pendingBrawlerArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                             armBrawlerIntercept()
                         }
                     }
                 }
                 if (last.name == "brawler_finish" && last.isOutbound) {
+                    pendingBrawlerArmJob?.cancel()
+                    pendingBrawlerArmJob = null
                     brawlerBattleActive = false
                     disarmBrawlerIntercept()
                     updateBrawlerPanel()
@@ -858,14 +861,13 @@ class OverlayService : Service() {
         swBrawler.setOnCheckedChangeListener { _, checked ->
             userBrawlerEnabled = checked
             if (checked && brawlerBattleActive) {
-                pendingArmJob?.cancel()
-                pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                    delay(3_000)
+                pendingBrawlerArmJob?.cancel()
+                pendingBrawlerArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                     armBrawlerIntercept()
                 }
             } else if (!checked) {
-                pendingArmJob?.cancel()
-                pendingArmJob = null
+                pendingBrawlerArmJob?.cancel()
+                pendingBrawlerArmJob = null
                 disarmBrawlerIntercept()
             }
         }
@@ -1015,6 +1017,7 @@ class OverlayService : Service() {
         AppState.viewModel.battleSeq.removeObserver(battleSeqObserver)
         AppState.viewModel.raidFightActive.removeObserver(raidFightObserver)
         pendingArmJob?.cancel()
+        pendingBrawlerArmJob?.cancel()
         serviceScope.cancel()
         removeOverlay()
         removeMini()
