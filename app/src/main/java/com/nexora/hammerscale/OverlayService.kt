@@ -255,6 +255,7 @@ class OverlayService : Service() {
                     updateUserModeBattleLabels()
                 }
                 if (last.name == "brawler_start" && last.isOutbound) {
+                    android.util.Log.d("HammerBrawler", "brawler_start OUTBOUND: userBrawlerEnabled=$userBrawlerEnabled brawlerBattleActive=$brawlerBattleActive")
                     brawlerBattleActive = true
                     updateBrawlerPanel()
                     updateUserModeBrawlerLabel()
@@ -265,6 +266,8 @@ class OverlayService : Service() {
                         pendingBrawlerArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                             armBrawlerIntercept()
                         }
+                    } else {
+                        android.util.Log.w("HammerBrawler", "brawler_start: userBrawlerEnabled=FALSE — intercept NOT armed")
                     }
                 }
                 if (last.name == "brawler_finish" && last.isOutbound) {
@@ -323,10 +326,6 @@ class OverlayService : Service() {
         val armStatus = v.findViewById<TextView>(R.id.tv_brawler_arm_status) ?: return
 
         if (!brawlerBattleActive) {
-            if (brawlerInterceptArmed) {
-                brawlerInterceptArmed = false
-                TrafficVpnService.instance?.disarmBrawlerIntercept()
-            }
             statusTv.text = "NO ACTIVE BRAWLER"
             statusTv.setTextColor(Color.parseColor("#FF8B949E"))
             btn.visibility = View.GONE
@@ -388,15 +387,27 @@ class OverlayService : Service() {
     }
 
     private fun armBrawlerIntercept() {
-        if (brawlerInterceptArmed) return
-        val vpn = TrafficVpnService.instance ?: return
+        if (brawlerInterceptArmed) {
+            android.util.Log.d("HammerBrawler", "armBrawlerIntercept: already armed, skipping")
+            return
+        }
+        val vpn = TrafficVpnService.instance
+        if (vpn == null) {
+            android.util.Log.e("HammerBrawler", "armBrawlerIntercept: VPN instance is null — arm FAILED")
+            return
+        }
         brawlerInterceptArmed = true
         vpn.armBrawlerIntercept()
+        android.util.Log.d("HammerBrawler", "armBrawlerIntercept: ARMED (brawlerBattleActive=$brawlerBattleActive)")
         updateBrawlerPanel()
     }
 
     private fun disarmBrawlerIntercept() {
-        if (!brawlerInterceptArmed) return
+        if (!brawlerInterceptArmed) {
+            android.util.Log.d("HammerBrawler", "disarmBrawlerIntercept: already disarmed")
+            return
+        }
+        android.util.Log.d("HammerBrawler", "disarmBrawlerIntercept: DISARMED")
         brawlerInterceptArmed = false
         TrafficVpnService.instance?.disarmBrawlerIntercept()
         updateBrawlerPanel()

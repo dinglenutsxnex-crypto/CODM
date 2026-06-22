@@ -105,8 +105,14 @@ class TcpHandler(
     // rather than surgically patched — see PacketInjector.patchBrawlerFinishToWin.
     private val brawlerInterceptArmed = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    fun armBrawlerIntercept()    { brawlerInterceptArmed.set(true) }
-    fun disarmBrawlerIntercept() { brawlerInterceptArmed.set(false) }
+    fun armBrawlerIntercept() {
+        brawlerInterceptArmed.set(true)
+        android.util.Log.d("HammerBrawler", "TcpHandler.armBrawlerIntercept: flag SET")
+    }
+    fun disarmBrawlerIntercept() {
+        brawlerInterceptArmed.set(false)
+        android.util.Log.d("HammerBrawler", "TcpHandler.disarmBrawlerIntercept: flag CLEARED")
+    }
 
     /**
      * Called from parseSf3Frames for every INBOUND complete frame.
@@ -402,10 +408,19 @@ class TcpHandler(
                 // (10 KB frame < 32 KB buffer). If the frame is split across reads the
                 // patch is skipped and the original response reaches the game.
                 val dataToForward: ByteArray = if (!conn.isWebSocket && brawlerInterceptArmed.get()) {
-                    PacketInjector.patchInboundBrawlerFinishToWin(data)
-                        ?.also { brawlerInterceptArmed.set(false) }
-                        ?: data
+                    val patched = PacketInjector.patchInboundBrawlerFinishToWin(data)
+                    if (patched != null) {
+                        brawlerInterceptArmed.set(false)
+                        android.util.Log.d("HammerBrawler", "readerLoop: inbound patch FIRED on conn=${conn.connId} size=${data.size}→${patched.size}")
+                        patched
+                    } else {
+                        android.util.Log.d("HammerBrawler", "readerLoop: armed, checked ${data.size}B on conn=${conn.connId}, no brawler_finish frame yet")
+                        data
+                    }
                 } else {
+                    if (brawlerInterceptArmed.get()) {
+                        android.util.Log.d("HammerBrawler", "readerLoop: armed but conn=${conn.connId} isWebSocket=${conn.isWebSocket}, skipping check")
+                    }
                     data
                 }
 
