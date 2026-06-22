@@ -292,6 +292,151 @@ object PacketInjector {
     }
 
     /**
+     * Intercepts an inbound server brawler_finish 0x02 frame and patches the result to WIN.
+     *
+     * Real-time brawler duels send fight data via a binary game-session protocol, NOT as an
+     * SF3 brawler_finish command from the client. The server therefore never receives a
+     * patchable outbound SF3 frame — it receives binary session data and autonomously sends
+     * back an SF3 brawler_finish response. This function intercepts that INBOUND response
+     * before it reaches the game client and flips the result field.
+     *
+     * Patch: params.field[2].field[5]  2 (LOSS) → 1 (WIN).
+     * All other bytes (rewards, ELO delta, match stats) are preserved so the game can parse
+     * the response normally; only the result indicator is changed.
+     *
+     * Returns patched data on success, or null if no complete brawler_finish frame is present
+     * in [data] (frame arrives split across TCP reads — caller falls back to unpatched).
+     */
+    fun patchInboundBrawlerFinishToWin(data: ByteArray): ByteArray? {
+        var pos = 0
+        while (pos < data.size) {
+            val t = data[pos].toInt() and 0xFF
+            when (t) {
+                0x02 -> {
+                    if (pos + 5 > data.size) return null   // incomplete header — wait
+                    val compLen = ByteBuffer.wrap(data, pos + 1, 4)
+                        .order(ByteOrder.LITTLE_ENDIAN).int
+                    if (compLen <= 0 || pos + 5 + compLen > data.size) return null  // incomplete frame
+                    val rawProto = rawInflate(data.copyOfRange(pos + 5, pos + 5 + compLen))
+                    if (rawProto != null) {
+                        val patchedFrame = tryPatchInboundBrawlerProto(rawProto)
+                        if (patchedFrame != null) {
+                            return data.copyOfRange(0, pos) + patchedFrame +
+                                   data.copyOfRange(pos + 5 + compLen, data.size)
+                        }
+                    }
+                    pos += 5 + compLen
+                }
+                0x01 -> {
+                    if (pos + 2 > data.size) return null
+                    val len = data[pos + 1].toInt() and 0xFF
+                    if (pos + 2 + len > data.size) return null
+                    pos += 2 + len
+                }
+                else -> pos++
+            }
+        }
+        return null
+    }
+
+    /**
+     * Verifies the decompressed proto is a brawler_finish, locates the result byte
+     * (params.field[2].field[5]), flips it to 1 (WIN), then re-encodes as a 0x02 frame.
+     */
+    private fun tryPatchInboundBrawlerProto(rawProto: ByteArray): ByteArray? {
+        var counter = -1L
+        var paramsStart = -1; var paramsLen = -1
+        var isFinish = false
+        var pos = 0
+        // Walk outer envelope
+        while (pos < rawProto.size) {
+            val tr = readVarintAt(rawProto, pos) ?: break
+            val tag = tr.first; pos += tr.second
+            val fn = (tag shr 3).toInt(); val wt = (tag and 7L).toInt()
+            when (wt) {
+                0 -> {
+                    val vr = readVarintAt(rawProto, pos) ?: break
+                    if (fn == 1) counter = vr.first
+                    pos += vr.second
+                }
+                2 -> {
+                    val lr = readVarintAt(rawProto, pos) ?: break
+                    pos += lr.second
+                    val len = lr.first.toInt()
+                    if (pos + len > rawProto.size) break
+                    when (fn) {
+                        2 -> isFinish = rawProto.copyOfRange(pos, pos + len)
+                                            .toString(Charsets.UTF_8) == "brawler_finish"
+                        3 -> { paramsStart = pos; paramsLen = len }
+                    }
+                    pos += len
+                }
+                else -> break
+            }
+        }
+        if (!isFinish || counter < 0 || paramsStart < 0) return null
+
+        // Walk params to find field[2]
+        var f2Start = -1; var f2Len = -1
+        pos = paramsStart
+        val paramsEnd = paramsStart + paramsLen
+        while (pos < paramsEnd) {
+            val tr = readVarintAt(rawProto, pos) ?: break
+            val tag = tr.first; pos += tr.second
+            val fn = (tag shr 3).toInt(); val wt = (tag and 7L).toInt()
+            when (wt) {
+                0 -> { val vr = readVarintAt(rawProto, pos) ?: break; pos += vr.second }
+                2 -> {
+                    val lr = readVarintAt(rawProto, pos) ?: break
+                    pos += lr.second
+                    val len = lr.first.toInt()
+                    if (pos + len > rawProto.size) break
+                    if (fn == 2) { f2Start = pos; f2Len = len }
+                    pos += len
+                }
+                1 -> { if (pos + 8 > rawProto.size) break; pos += 8 }
+                5 -> { if (pos + 4 > rawProto.size) break; pos += 4 }
+                else -> break
+            }
+        }
+        if (f2Start < 0) return null
+
+        // Walk params.field[2] to find field[5] (result varint)
+        pos = f2Start
+        val f2End = f2Start + f2Len
+        while (pos < f2End) {
+            val tr = readVarintAt(rawProto, pos) ?: break
+            val tag = tr.first; pos += tr.second
+            val fn = (tag shr 3).toInt(); val wt = (tag and 7L).toInt()
+            when (wt) {
+                0 -> {
+                    val valuePos = pos
+                    val vr = readVarintAt(rawProto, pos) ?: break
+                    pos += vr.second
+                    if (fn == 5) {
+                        // Flip result to WIN (1) — single-byte varint, in-place safe
+                        val patched = rawProto.copyOf()
+                        patched[valuePos] = 0x01
+                        val patchedParams = patched.copyOfRange(paramsStart, paramsStart + paramsLen)
+                        return envelope("brawler_finish", patchedParams, counter)
+                    }
+                }
+                2 -> {
+                    val lr = readVarintAt(rawProto, pos) ?: break
+                    pos += lr.second
+                    val len = lr.first.toInt()
+                    if (pos + len > rawProto.size) break
+                    pos += len
+                }
+                1 -> { if (pos + 8 > rawProto.size) break; pos += 8 }
+                5 -> { if (pos + 4 > rawProto.size) break; pos += 4 }
+                else -> break
+            }
+        }
+        return null
+    }
+
+    /**
      * Rebuilds the game's own brawler_finish packet so the server records a WIN.
      *
      * Unlike patchFinishFightToWin (surgical byte-flip), brawler_finish requires a

@@ -393,8 +393,24 @@ class TcpHandler(
                 buf.flip()
                 val data = ByteArray(read).also { buf.get(it) }
 
+                // ── Inbound brawler_finish intercept ──────────────────────────────────
+                // For real-time brawler duels the client sends binary game-session data
+                // (not an SF3 brawler_finish command), so the outbound intercept never
+                // fires. Instead, watch for the SERVER's inbound brawler_finish response
+                // and replace the result with WIN before the game client sees it.
+                // Works for the common case where the full 0x02 frame arrives in one read
+                // (10 KB frame < 32 KB buffer). If the frame is split across reads the
+                // patch is skipped and the original response reaches the game.
+                val dataToForward: ByteArray = if (!conn.isWebSocket && brawlerInterceptArmed.get()) {
+                    PacketInjector.patchInboundBrawlerFinishToWin(data)
+                        ?.also { brawlerInterceptArmed.set(false) }
+                        ?: data
+                } else {
+                    data
+                }
+
                 // Push data back to the app through the TUN interface
-                sendDataToApp(conn, data)
+                sendDataToApp(conn, dataToForward)
 
                 if (!conn.isWebSocket && conn.awaitingWsHandshake) {
                     val text = String(data, Charsets.ISO_8859_1)
@@ -418,7 +434,9 @@ class TcpHandler(
                     // to the parser returns null (extractPayload checks data.size < 5+len)
                     // so WinConfirmed is never emitted.  We accumulate bytes here and only
                     // call onMessage once a COMPLETE frame is available.
-                    conn.inboundSf3Buffer.write(data)
+                    // Use dataToForward so that if the brawler inbound patch fired, the log
+                    // also records the patched WIN frame rather than the original LOSS.
+                    conn.inboundSf3Buffer.write(dataToForward)
                     parseSf3Frames(conn.connId, conn.inboundSf3Buffer, LiveMessage.Direction.INBOUND, conn)
                 }
             }
