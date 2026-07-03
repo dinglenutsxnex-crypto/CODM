@@ -6,10 +6,6 @@ import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
 
-// Renders an animated GIF from a raw resource with luma-keyed transparency:
-// alpha = R + G + B (clamped 0-255), so black pixels vanish and bright pixels
-// stay opaque, giving a soft glow edge. Uses the deprecated but functional
-// Movie API to avoid pulling in an extra GIF library.
 @Suppress("DEPRECATION")
 class GifView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null

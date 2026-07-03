@@ -27,11 +27,9 @@ class ConnectionViewModel : ViewModel() {
     private val _gameSocketId = MutableLiveData<String?>(null)
     val gameSocketId: LiveData<String?> = _gameSocketId
 
-    // May differ from gameSocketId (HANDSHAKE conn) if SF3 uses separate connections.
     private val _battleSocketId = MutableLiveData<String?>(null)
     val battleSocketId: LiveData<String?> = _battleSocketId
 
-    // Injected packets must use this + 1 so the server doesn't treat them as duplicates.
     private val _outboundCounter = AtomicLong(0L)
     val nextInjectCounter: Long get() {
         val c = _outboundCounter.get()
@@ -47,15 +45,12 @@ class ConnectionViewModel : ViewModel() {
     private val _currentBattle = MutableLiveData<BattleState?>(null)
     val currentBattle: LiveData<BattleState?> = _currentBattle
 
-    // Round count auto-detected from the server's clan_start_fight response.
     private val _clanRounds = MutableLiveData<Int?>(null)
     val clanRounds: LiveData<Int?> = _clanRounds
 
-    // 0 = first fight (field[3] absent), N = Nth fight (0-indexed). Null until first sniff.
     private val _battleSeq = MutableLiveData<Int?>(null)
     val battleSeq: LiveData<Int?> = _battleSeq
 
-    // True between outbound raid_fight_start and inbound raid_fight_finish.
     private val _raidFightActive = MutableLiveData<Boolean>(false)
     val raidFightActive: LiveData<Boolean> = _raidFightActive
 
@@ -108,8 +103,6 @@ class ConnectionViewModel : ViewModel() {
         }
     }
 
-    // Returns every LiveMessage from every connection, sorted by timestamp, so exported
-    // zips include both the auth/game socket and battle socket, not just gameSocketId.
     fun getAllMessages(): List<LiveMessage> {
         return connectionMap.values
             .flatMap { conn -> synchronized(conn.messages) { conn.messages.toList() } }
@@ -118,9 +111,6 @@ class ConnectionViewModel : ViewModel() {
 
     fun addMessage(id: String, message: LiveMessage) {
         connectionMap[id]?.let { conn ->
-            // Must update synchronously, not inside the coroutine below — otherwise the Win
-            // button (main thread) can read a stale counter and inject a duplicate the server
-            // silently drops, resulting in no WIN response.
             if (message.direction == LiveMessage.Direction.OUTBOUND) {
                 val counter = GameProtocolParser.extractCounter(message.data)
                 if (counter != null) {
@@ -163,8 +153,6 @@ class ConnectionViewModel : ViewModel() {
                     when (event) {
                         is GameEvent.BattleStarted -> {
                             if (event.battleId != "?") {
-                                // event_battle_start_fight (hero/PVP) always overrides whatever
-                                // is tracked, so a clan start_fight firing first doesn't stick.
                                 val isHeroFight = event.commandName == "event_battle_start_fight"
                                 if (isHeroFight || _currentBattle.value == null) {
                                     _currentBattle.postValue(BattleState(event.battleId))
@@ -174,9 +162,6 @@ class ConnectionViewModel : ViewModel() {
                             }
                         }
                         is GameEvent.WinConfirmed -> {
-                            // "?" means the server ack used its own sequential fight counter
-                            // instead of echoing the client's template battle ID, so we clear
-                            // unconditionally in that case; otherwise the ID must still match.
                             val tracked = _currentBattle.value?.battleId
                             if (tracked == null || event.battleId == "?" || tracked == event.battleId) {
                                 _currentBattle.postValue(null)
@@ -189,9 +174,6 @@ class ConnectionViewModel : ViewModel() {
                             if (event.name in setOf("finish_fight", "event_battle_finish_fight", "clan_finish_fight")) {
                                 _currentBattle.postValue(null)
                             }
-                            // event_battle_finish_fight opens a new TCP connection distinct
-                            // from the (already closed) start_fight one — track it so a WIN
-                            // injection targets the right socket.
                             if (event.isOutbound && event.name == "event_battle_finish_fight") {
                                 _battleSocketId.postValue(id)
                             }

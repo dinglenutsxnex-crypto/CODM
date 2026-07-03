@@ -75,7 +75,6 @@ class UdpHandler(
                 val response = recvBuf.copyOf(recvPkt.length)
                 onMessage(connKey, LiveMessage(LiveMessage.Direction.INBOUND, response, commandName = "unknown"))
 
-                // Parse DNS response
                 val dnsResp = DnsParser.parse(response)
                 val answers = dnsResp?.answers?.map { rec ->
                     when (rec.type) {
@@ -86,7 +85,6 @@ class UdpHandler(
                     }
                 } ?: emptyList()
 
-                // Update connection entry with answers
                 val updatedEntry = entry.copy(
                     dnsAnswers = answers,
                     status = ConnectionStatus.CLOSED,
@@ -94,7 +92,6 @@ class UdpHandler(
                 )
                 onConnectionEvent(updatedEntry)
 
-                // Write DNS response back to VPN fd
                 val responsePacket = PacketParser.buildIPv4UDPPacket(
                     srcIp = dstIp,
                     dstIp = srcIp,

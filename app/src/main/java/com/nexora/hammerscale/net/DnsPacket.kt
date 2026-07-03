@@ -22,12 +22,12 @@ object DnsParser {
             val isResponse = (flags shr 15) and 1 == 1
             val qdCount = buf.getShort().toInt() and 0xFFFF
             val anCount = buf.getShort().toInt() and 0xFFFF
-            buf.getShort(); buf.getShort() // ns, ar count
+            buf.getShort(); buf.getShort()
 
             val questions = mutableListOf<String>()
             repeat(qdCount) {
                 val name = readName(buf, data)
-                buf.getShort(); buf.getShort() // type, class
+                buf.getShort(); buf.getShort()
                 questions.add(name)
             }
 
@@ -36,17 +36,17 @@ object DnsParser {
                 if (buf.remaining() < 10) return@repeat
                 val name = readName(buf, data)
                 val type = buf.getShort().toInt() and 0xFFFF
-                buf.getShort() // class
-                buf.getInt()   // TTL
+                buf.getShort()
+                buf.getInt()
                 val rdLen = buf.getShort().toInt() and 0xFFFF
                 val rdData = when (type) {
-                    1 -> { // A record
+                    1 -> {
                         if (rdLen == 4 && buf.remaining() >= 4) {
                             val ip = ByteArray(4).also { buf.get(it) }
                             ip.joinToString(".") { (it.toInt() and 0xFF).toString() }
                         } else { repeat(rdLen) { if (buf.hasRemaining()) buf.get() }; "?" }
                     }
-                    28 -> { // AAAA record
+                    28 -> {
                         if (rdLen == 16 && buf.remaining() >= 16) {
                             val ip = ByteArray(16).also { buf.get(it) }
                             ip.toList().chunked(2).joinToString(":") {
@@ -54,7 +54,7 @@ object DnsParser {
                             }
                         } else { repeat(rdLen) { if (buf.hasRemaining()) buf.get() }; "?" }
                     }
-                    5 -> { // CNAME
+                    5 -> {
                         val saved = buf.position()
                         val cname = try { readName(buf, data) } catch (e: Exception) { "?" }
                         val read = buf.position() - saved
@@ -107,17 +107,17 @@ object DnsParser {
         val buf = ByteBuffer.allocate(512)
         val id = (Math.random() * 65535).toInt()
         buf.putShort(id.toShort())
-        buf.putShort(0x0100.toShort()) // Standard query, recursion desired
-        buf.putShort(1.toShort()) // 1 question
+        buf.putShort(0x0100.toShort())
+        buf.putShort(1.toShort())
         buf.putShort(0); buf.putShort(0); buf.putShort(0)
 
         domain.split('.').forEach { label ->
             buf.put(label.length.toByte())
             buf.put(label.toByteArray(Charsets.US_ASCII))
         }
-        buf.put(0) // null terminator
-        buf.putShort(type.toShort()) // A record
-        buf.putShort(1.toShort()) // IN class
+        buf.put(0)
+        buf.putShort(type.toShort())
+        buf.putShort(1.toShort())
 
         return buf.array().copyOf(buf.position())
     }

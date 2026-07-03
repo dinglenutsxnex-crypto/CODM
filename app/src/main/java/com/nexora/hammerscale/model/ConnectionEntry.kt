@@ -10,7 +10,7 @@ data class LiveMessage(
     val direction: Direction,
     val data: ByteArray,
     val timestamp: Long = System.currentTimeMillis(),
-    val commandName: String? = null  // e.g. "login", "ping", "brawler_finish", null for unknown
+    val commandName: String? = null
 ) {
     enum class Direction { OUTBOUND, INBOUND }
 
@@ -68,7 +68,7 @@ data class ConnectionEntry(
         SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(startTime))
 
     val trafficSummary: String get() =
-        "↑${formatBytes(bytesOut)} ↓${formatBytes(bytesIn)}"
+        "out ${formatBytes(bytesOut)} / in ${formatBytes(bytesIn)}"
 
     private fun formatBytes(b: Long): String = when {
         b < 1024 -> "${b}B"

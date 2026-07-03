@@ -63,11 +63,9 @@ class TrafficVpnService : VpnService() {
                 .addDnsServer("8.8.4.4")
                 .setMtu(1500)
 
-            // Only capture traffic from the target app
             try {
                 builder.addAllowedApplication(TARGET_PACKAGE)
             } catch (e: Exception) {
-                // Target app not installed - still monitor all traffic
             }
 
             vpnInterface = builder.establish()
@@ -136,16 +134,10 @@ class TrafficVpnService : VpnService() {
         }
     }
 
-    // Falls back through battleSocketId (carried the BattleStarted packet), then
-    // gameSocketId (the handshake connection), then any ESTABLISHED connection.
     fun injectToGameSocket(data: ByteArray) {
         injectToGameSocketDiag(data)
     }
 
-    // Direct-write injection: writes bytes straight to the server socket with a
-    // per-connection lock, bypassing the outbound queue, and returns a diagnostic
-    // string. Must be called from a background thread/IO coroutine since the write
-    // lock may block briefly if writerLoop is mid-write.
     fun injectDirect(data: ByteArray): String {
         val handler = tcpHandler ?: return "FAIL: tcpHandler is null (VPN not running)"
         val vm = AppState.viewModel
@@ -164,8 +156,6 @@ class TrafficVpnService : VpnService() {
         }
     }
 
-    // Same as injectToGameSocket but returns a one-line diagnostic string so the
-    // overlay can display exactly what happened. Kept for compatibility — prefer injectDirect.
     fun injectToGameSocketDiag(data: ByteArray): String? {
         val handler = tcpHandler ?: return null
         val vm = AppState.viewModel

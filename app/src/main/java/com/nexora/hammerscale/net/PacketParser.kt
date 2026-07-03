@@ -61,20 +61,19 @@ object PacketParser {
         val ihl = (versionIHL and 0x0F) * 4
         if (buf.remaining() < ihl - 1) { buf.reset(); return null }
 
-        buf.get() // DSCP/ECN
+        buf.get()
         val totalLen = buf.getShort().toInt() and 0xFFFF
-        buf.getShort() // ID
-        buf.getShort() // flags+fragment offset
-        buf.get()      // TTL
+        buf.getShort()
+        buf.getShort()
+        buf.get()
         val protocol = buf.get().toInt() and 0xFF
-        buf.getShort() // checksum
+        buf.getShort()
 
         val srcBytes = ByteArray(4).also { buf.get(it) }
         val dstBytes = ByteArray(4).also { buf.get(it) }
         val srcAddr = InetAddress.getByAddress(srcBytes)
         val dstAddr = InetAddress.getByAddress(dstBytes)
 
-        // skip IP options if any
         val optLen = ihl - 20
         if (optLen > 0 && buf.remaining() >= optLen) repeat(optLen) { buf.get() }
 
@@ -97,8 +96,8 @@ object PacketParser {
         val dataOffset = (dataOffsetFlags shr 12) and 0x0F
         val flags = dataOffsetFlags and 0x01FF
         val window = buf.getShort().toInt() and 0xFFFF
-        buf.getShort() // checksum
-        buf.getShort() // urgent pointer
+        buf.getShort()
+        buf.getShort()
 
         val tcpHeaderLen = dataOffset * 4
         val optLen = tcpHeaderLen - 20
@@ -119,7 +118,7 @@ object PacketParser {
         val srcPort = buf.getShort().toInt() and 0xFFFF
         val dstPort = buf.getShort().toInt() and 0xFFFF
         val length = buf.getShort().toInt() and 0xFFFF
-        buf.getShort() // checksum
+        buf.getShort()
         val payloadLen = length - 8
         val payload = if (payloadLen > 0 && buf.remaining() >= payloadLen) {
             ByteArray(payloadLen).also { buf.get(it) }
@@ -142,21 +141,19 @@ object PacketParser {
         val totalLen = ipHeaderLen + tcpHeaderLen + payload.size
         val buf = ByteBuffer.allocate(totalLen)
 
-        // IP header
         buf.put((0x45).toByte())
         buf.put(0)
         buf.putShort(totalLen.toShort())
-        buf.putShort(0) // ID
-        buf.putShort(0x4000.toShort()) // Don't fragment
-        buf.put(64)  // TTL
+        buf.putShort(0)
+        buf.putShort(0x4000.toShort())
+        buf.put(64)
         buf.put(PROTO_TCP.toByte())
-        buf.putShort(0) // checksum placeholder
+        buf.putShort(0)
         buf.put(srcIp)
         buf.put(dstIp)
         val ipChecksum = checksum(buf.array(), 0, ipHeaderLen)
         buf.putShort(10, ipChecksum.toShort())
 
-        // TCP header
         val tcpStart = ipHeaderLen
         buf.putShort((srcPort and 0xFFFF).toShort())
         buf.putShort((dstPort and 0xFFFF).toShort())
@@ -164,8 +161,8 @@ object PacketParser {
         buf.putInt((ack and 0xFFFFFFFFL).toInt())
         buf.putShort((0x5000 or (flags and 0x01FF)).toShort())
         buf.putShort((window and 0xFFFF).toShort())
-        buf.putShort(0) // checksum placeholder
-        buf.putShort(0) // urgent
+        buf.putShort(0)
+        buf.putShort(0)
 
         if (payload.isNotEmpty()) buf.put(payload)
 

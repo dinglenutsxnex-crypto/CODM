@@ -41,7 +41,7 @@ class LiveMessageAdapter : ListAdapter<LiveMessage, LiveMessageAdapter.ViewHolde
         val ctx = holder.itemView.context
         val isOut = msg.direction == LiveMessage.Direction.OUTBOUND
 
-        holder.tvDirection.text = if (isOut) "▲ OUT" else "▼ IN"
+        holder.tvDirection.text = if (isOut) "OUT" else "IN"
         holder.tvDirection.setTextColor(
             ContextCompat.getColor(ctx, if (isOut) R.color.outbound_color else R.color.inbound_color)
         )

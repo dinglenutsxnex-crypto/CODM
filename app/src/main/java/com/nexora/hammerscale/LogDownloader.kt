@@ -11,9 +11,6 @@ import java.util.zip.ZipOutputStream
 
 object LogDownloader {
 
-    // Groups consecutive messages by direction, numbering each group per direction
-    // (user_ping_1, user_ping_2 / server_login_1, ...). Multi-packet groups get a
-    // decimal suffix (user_ping_2.1.bin, user_ping_2.2.bin); single-packet groups don't.
     fun downloadAndShare(context: Context, messages: List<LiveMessage>) {
         if (messages.isEmpty()) {
             Toast.makeText(context, "No messages to export", Toast.LENGTH_SHORT).show()

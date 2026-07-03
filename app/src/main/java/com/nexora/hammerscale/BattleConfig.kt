@@ -13,10 +13,6 @@ import javax.crypto.spec.SecretKeySpec
 
 object BattleConfig {
 
-    // Stores either Int (single-fight) or List<Int> (multi-fight / skeleton battles).
-    // Each element in the list is the RoundsToWin for the sub-battle at that index,
-    // matching the server's field[3] value in the inbound event_battle_start_fight
-    // response (0-indexed; absent = 0).
     private val map = ConcurrentHashMap<String, Any>()
 
     @Volatile var loadedVersion: String = ""

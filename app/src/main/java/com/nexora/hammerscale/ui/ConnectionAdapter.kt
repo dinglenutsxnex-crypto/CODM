@@ -56,7 +56,6 @@ class ConnectionAdapter(
         holder.tvTime.text    = entry.startTimeStr
         holder.tvTraffic.text = entry.trafficSummary
 
-        // Protocol chip
         holder.chipProtocol.text = when {
             entry.isWebSocket -> "WS"
             entry.protocol == Protocol.DNS -> "DNS"
@@ -71,12 +70,11 @@ class ConnectionAdapter(
         }
         holder.chipProtocol.setChipBackgroundColorResource(chipColor)
 
-        // Status
         holder.tvStatus.text = when (entry.status) {
-            ConnectionStatus.CONNECTING -> "⟳ connecting"
-            ConnectionStatus.ACTIVE     -> "● active"
-            ConnectionStatus.CLOSING    -> "↓ closing"
-            ConnectionStatus.CLOSED     -> "○ closed"
+            ConnectionStatus.CONNECTING -> "connecting"
+            ConnectionStatus.ACTIVE     -> "active"
+            ConnectionStatus.CLOSING    -> "closing"
+            ConnectionStatus.CLOSED     -> "closed"
         }
         val statusColor = when (entry.status) {
             ConnectionStatus.ACTIVE     -> R.color.green_active
@@ -86,13 +84,11 @@ class ConnectionAdapter(
         }
         holder.tvStatus.setTextColor(ContextCompat.getColor(ctx, statusColor))
 
-        // Live pulse indicator
         holder.liveIndicator.visibility = if (entry.isLive) View.VISIBLE else View.INVISIBLE
         holder.liveIndicator.setBackgroundColor(
             ContextCompat.getColor(ctx, if (entry.isLive) R.color.green_active else R.color.text_secondary)
         )
 
-        // DNS answer
         if (entry.dnsAnswers.isNotEmpty()) {
             holder.tvDnsAnswer.visibility = View.VISIBLE
             holder.tvDnsAnswer.text = entry.dnsAnswers.take(3).joinToString("\n")
