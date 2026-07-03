@@ -22,23 +22,20 @@ data class TcpConnState(
     var remoteSeq: Long,
     var channel: SocketChannel? = null,
     var status: TcpStatus = TcpStatus.SYN_RECEIVED,
-    // Outbound data queue — ensures writes to the real server are serialized
     val outboundQueue: KChannel<ByteArray> = KChannel(KChannel.UNLIMITED),
-    // Write lock — held by writerLoop during each write; also held by injectDirect
-    // so injected bytes never interleave with queued bytes mid-packet.
+    // Held by writerLoop during each write; also held by injectDirect so injected
+    // bytes never interleave with queued bytes mid-packet.
     val writeLock: java.util.concurrent.locks.ReentrantLock = java.util.concurrent.locks.ReentrantLock(),
     var awaitingWsHandshake: Boolean = false,
     var isWebSocket: Boolean = false,
     val inboundWsBuffer: ByteArrayOutputStream = ByteArrayOutputStream(),
     val outboundWsBuffer: ByteArrayOutputStream = ByteArrayOutputStream(),
-    // SF3 stream reassembly buffers — the server's large responses (e.g. finish_fight ACK
-    // is 33 KB decompressed / 12 KB compressed) arrive in multiple TCP segments.
-    // We must buffer raw bytes and emit ONLY complete SF3 frames to the parser.
+    // The server's large responses (e.g. finish_fight ACK) arrive across multiple TCP
+    // segments, so raw bytes are buffered here and only complete SF3 frames are parsed.
     val inboundSf3Buffer: ByteArrayOutputStream = ByteArrayOutputStream(),
     val outboundSf3Buffer: ByteArrayOutputStream = ByteArrayOutputStream(),
-    // Counts consecutive unknown-frame-type bytes seen in parseSf3Frames.
-    // Once this exceeds MAX_RESYNC_BYTES the buffer is wiped and resync counter reset
-    // so a single bad chunk never permanently blocks all future inbound events.
+    // Once consecutive unknown-frame-type bytes exceed MAX_RESYNC_BYTES the buffer is
+    // wiped so a single bad chunk never permanently blocks future inbound events.
     var inboundResyncBytes: Int = 0
 ) {
     val key get() = "${srcIp.joinToString(".")}:$srcPort->${dstIp.joinToString(".")}:$dstPort"
@@ -60,49 +57,37 @@ class TcpHandler(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val outStream = FileOutputStream(vpnFd)
 
-    // ── Intercept-and-replace flag ────────────────────────────────────────
-    // When set, the next outbound event_battle_finish_fight packet is silently
-    // replaced with a crafted WIN packet before being forwarded to the server.
-    // This is the correct MITM approach: the game client sent the request so its
-    // state machine is in "waiting for server response" mode → the server's WIN
-    // response is processed normally and the win screen is shown.
+    // When armed, the next outbound event_battle_finish_fight packet is silently
+    // replaced with a crafted WIN packet before being forwarded to the server. This
+    // works because the game client sent the request itself, so its state machine
+    // is already waiting for a server response and processes the WIN normally.
     private val interceptArmed = java.util.concurrent.atomic.AtomicBoolean(false)
     private val interceptRounds = java.util.concurrent.atomic.AtomicInteger(3)
 
-    /** Arm the finish_fight intercept. The next outbound finish_fight is replaced with a WIN
-     *  using [roundsToWin] for both field[5] (wonRounds) and field[7] (totalRounds). */
     fun armIntercept(roundsToWin: Int = 3) {
         interceptRounds.set(roundsToWin.coerceIn(1, 127))
         interceptArmed.set(true)
     }
 
-    /** Disarm without firing (e.g. user cancelled or battle ended without a finish_fight). */
     fun disarmIntercept() { interceptArmed.set(false) }
 
-    // ── Clan battle auto-intercept ────────────────────────────────────────
-    // Auto-armed when the server's clan_start_fight response is sniffed inbound.
-    // Rounds are read directly from the server's battle config (field[10] in the
-    // nested response proto) rather than from any JSON lookup.
-    // When armed, the next outbound clan_finish_fight is patched to WIN (same
-    // surgical approach as the event_battle intercept above).
+    // Auto-armed when the server's clan_start_fight response is sniffed inbound; rounds
+    // come from the server's battle config rather than a local lookup. When armed, the
+    // next outbound clan_finish_fight is patched to WIN the same way as event battles.
     private val clanInterceptArmed  = java.util.concurrent.atomic.AtomicBoolean(false)
     private val clanInterceptRounds = java.util.concurrent.atomic.AtomicInteger(2)
 
-    /** Disarm the clan intercept without firing. */
     fun disarmClanIntercept() { clanInterceptArmed.set(false) }
 
-    // ── Raid damage intercept ─────────────────────────────────────────────
-    // When armed, the next outbound raid_fight_finish is patched so that
-    // params.field[2] fixed32 = 1.0, meaning 100% of boss HP dealt (boss killed).
+    // When armed, the next outbound raid_fight_finish is patched so params.field[2]
+    // fixed32 = 1.0 (100% of boss HP dealt).
     private val raidInterceptArmed = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun armRaidIntercept()    { raidInterceptArmed.set(true) }
     fun disarmRaidIntercept() { raidInterceptArmed.set(false) }
 
-    // ── Brawler WIN intercept ─────────────────────────────────────────────
-    // When armed, the next outbound brawler_finish is fully rebuilt as a WIN.
-    // The inner proto is completely replaced (WIN has 7 fields vs LOSS's 4)
-    // rather than surgically patched — see PacketInjector.patchBrawlerFinishToWin.
+    // When armed, the next outbound brawler_finish is fully rebuilt as a WIN rather than
+    // surgically patched, since WIN and LOSS have different field sets.
     private val brawlerInterceptArmed = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun armBrawlerIntercept() {
@@ -114,23 +99,12 @@ class TcpHandler(
         android.util.Log.d("HammerBrawler", "TcpHandler.disarmBrawlerIntercept: flag CLEARED")
     }
 
-    /**
-     * Called from parseSf3Frames for every INBOUND complete frame.
-     * If [frame] is the server's clan_start_fight response, extracts the round
-     * count and arms the clan intercept so the next outbound clan_finish_fight
-     * is automatically patched to WIN with the correct round value.
-     */
-    /**
-     * Extracts the SF3 command name from a framed packet (0x01 or 0x02 prefix).
-     * Returns null if the command cannot be determined (unknown/unparsed).
-     */
     private fun extractCommandName(frame: ByteArray): String? {
         return try {
             val proto = GameProtocolParser.extractPayload(frame) ?: return null
             val fields = GameProtocolParser.readProtoFields(proto)
             val cmdBytes = fields[2] as? ByteArray ?: return null
             val cmd = cmdBytes.toString(Charsets.UTF_8)
-            // Only return if it's a meaningful command (not empty or whitespace)
             if (cmd.isNotBlank()) cmd else null
         } catch (_: Exception) { null }
     }
@@ -146,14 +120,6 @@ class TcpHandler(
         onClanRounds(rounds)
     }
 
-    /**
-     * Called for every inbound frame. If this is the server's event_battle_start_fight
-     * response, extracts the 0-indexed sub-battle sequence number (field[3] in params)
-     * and reports it via [onBattleSeq].
-     *
-     * field[3] absent → sub-battle 0 (first fight or single-fight battle)
-     * field[3] = N   → sub-battle N (0-indexed)
-     */
     private fun sniffEventBattleStart(frame: ByteArray) {
         val seq = GameProtocolParser.extractBattleSeqFromServerStart(frame) ?: return
         onBattleSeq(seq)
@@ -254,15 +220,11 @@ class TcpHandler(
                 conn.awaitingWsHandshake = true
             }
 
-            // ── ARM-WIN intercept ────────────────────────────────────────────
             // If the intercept is armed and this segment is a complete outbound
-            // event_battle_finish_fight frame, swap it for a crafted WIN packet.
-            // We send the WIN using the SAME counter the game used, so the server
-            // responds on the SAME connection the game's state machine is waiting on.
-            // The game client then processes the win response and shows the WIN screen.
-            //
-            // The finish_fight frame is always a small packet (≤ 57 B in captures)
-            // so it always arrives as one complete TCP segment — no partial-frame risk.
+            // event_battle_finish_fight frame, swap it for a crafted WIN packet using
+            // the same counter the game used, so the server responds on the connection
+            // the game's state machine is already waiting on. The finish_fight frame is
+            // always small so it always arrives as one complete TCP segment.
             var payloadForServer = packet.payload
             if (interceptArmed.get() && GameProtocolParser.tryExtractFinishFight(packet.payload) != null) {
                 interceptArmed.set(false)
@@ -275,11 +237,9 @@ class TcpHandler(
                 payloadForServer = patched
             }
 
-            // ── Clan battle auto-intercept ────────────────────────────────
-            // Auto-armed when we sniffed the server's clan_start_fight response
-            // (see parseSf3Frames inbound path). When the game now sends its own
-            // clan_finish_fight, patch field[4]→WIN and set rounds from the value
-            // we captured from the server. No user interaction required.
+            // Auto-armed when we sniffed the server's clan_start_fight response.
+            // When the game sends its own clan_finish_fight, patch field[4] to WIN
+            // using the rounds value captured from the server — no user action needed.
             if (clanInterceptArmed.get() && GameProtocolParser.tryExtractClanFinishFight(packet.payload) != null) {
                 clanInterceptArmed.set(false)
                 val patched = PacketInjector.patchFinishFightToWin(packet.payload, clanInterceptRounds.get())
@@ -291,9 +251,6 @@ class TcpHandler(
                 payloadForServer = patched
             }
 
-            // ── Raid damage intercept ─────────────────────────────────────
-            // When armed, replaces params.field[2] fixed32 with 1.0 so the
-            // server sees 100% of boss HP dealt = boss reduced to 0 HP.
             if (raidInterceptArmed.get() && GameProtocolParser.tryExtractRaidFightFinish(payloadForServer)) {
                 raidInterceptArmed.set(false)
                 val patched = PacketInjector.patchRaidFightFinishToMaxDamage(payloadForServer)
@@ -305,10 +262,8 @@ class TcpHandler(
                 }
             }
 
-            // ── Brawler WIN intercept ─────────────────────────────────────
-            // When armed, replaces the outbound brawler_finish with a fully
-            // rebuilt WIN packet (same counter, match info preserved from the
-            // game's own packet so the server knows who was played against).
+            // Replaces the outbound brawler_finish with a fully rebuilt WIN packet
+            // (same counter, match info preserved so the server knows the opponent).
             if (brawlerInterceptArmed.get() && GameProtocolParser.tryExtractBrawlerFinish(payloadForServer)) {
                 brawlerInterceptArmed.set(false)
                 val patched = PacketInjector.patchBrawlerFinishToWin(payloadForServer)
@@ -354,11 +309,9 @@ class TcpHandler(
         scope.launch { try { conn.channel?.close() } catch (_: Exception) {} }
     }
 
-    /**
-     * Drains the outbound queue and writes each chunk to the real server socket.
-     * Acquires writeLock around each write so injectDirect can safely interleave
-     * without corrupting the byte stream.
-     */
+    // Drains the outbound queue and writes each chunk to the real server socket.
+    // Acquires writeLock around each write so injectDirect can safely interleave
+    // without corrupting the byte stream.
     private suspend fun writerLoop(conn: TcpConnState) {
         val ch = conn.channel ?: return
         try {
@@ -378,10 +331,6 @@ class TcpHandler(
         }
     }
 
-    /**
-     * Reads from the real server and injects the response back into the VPN TUN.
-     * Also handles the HTTP→WS upgrade detection in the server's 101 response.
-     */
     private suspend fun readerLoop(conn: TcpConnState) {
         val ch = conn.channel ?: return
         val buf = ByteBuffer.allocate(32768)
@@ -399,13 +348,11 @@ class TcpHandler(
                 buf.flip()
                 val data = ByteArray(read).also { buf.get(it) }
 
-                // ── Inbound brawler_finish intercept ──────────────────────────────────
-                // For real-time brawler duels the client sends binary game-session data
-                // (not an SF3 brawler_finish command), so the outbound intercept never
-                // fires. Instead, watch for the SERVER's inbound brawler_finish response
-                // and replace the result with WIN before the game client sees it.
-                // Works for the common case where the full 0x02 frame arrives in one read
-                // (10 KB frame < 32 KB buffer). If the frame is split across reads the
+                // Real-time brawler duels send binary game-session data rather than an
+                // SF3 brawler_finish command, so the outbound intercept never fires here.
+                // Instead watch for the server's inbound brawler_finish response and
+                // replace the result with WIN before the game client sees it. Works when
+                // the full 0x02 frame arrives in one read; if the frame is split across reads the
                 // patch is skipped and the original response reaches the game.
                 val dataToForward: ByteArray = if (!conn.isWebSocket && brawlerInterceptArmed.get()) {
                     val patched = PacketInjector.patchInboundBrawlerFinishToWin(data)
@@ -443,14 +390,10 @@ class TcpHandler(
                     conn.inboundWsBuffer.write(data)
                     parseWsFrames(conn.connId, conn.inboundWsBuffer, LiveMessage.Direction.INBOUND)
                 } else {
-                    // Buffer and reassemble SF3 frames.
-                    // The server's finish_fight ACK is 12 KB compressed / 33 KB decompressed
-                    // and arrives across 3 separate TCP reads.  Passing a raw partial chunk
-                    // to the parser returns null (extractPayload checks data.size < 5+len)
-                    // so WinConfirmed is never emitted.  We accumulate bytes here and only
-                    // call onMessage once a COMPLETE frame is available.
-                    // Use dataToForward so that if the brawler inbound patch fired, the log
-                    // also records the patched WIN frame rather than the original LOSS.
+                    // Buffer and reassemble SF3 frames — large responses arrive split
+                    // across several TCP reads, and onMessage should only fire once a
+                    // complete frame is available. Using dataToForward means the log
+                    // records the patched WIN frame if the brawler inbound patch fired.
                     conn.inboundSf3Buffer.write(dataToForward)
                     parseSf3Frames(conn.connId, conn.inboundSf3Buffer, LiveMessage.Direction.INBOUND, conn)
                 }
@@ -460,16 +403,8 @@ class TcpHandler(
         }
     }
 
-    /**
-     * Parses as many complete WebSocket frames as possible from [buffer].
-     * Any leftover incomplete bytes stay in the buffer for the next read.
-     *
-     * Frame layout:
-     *   Byte 0: FIN(1) RSV(3) Opcode(4)
-     *   Byte 1: MASK(1) PayloadLen(7)  [126→next 2B, 127→next 8B]
-     *   Masking key (4 bytes, only if MASK=1)
-     *   Payload (XOR'd with masking key if masked)
-     */
+    // Frame layout: byte 0 = FIN(1) RSV(3) Opcode(4), byte 1 = MASK(1) PayloadLen(7)
+    // (126 -> next 2B, 127 -> next 8B), then masking key (4B if MASK=1), then payload.
     private fun parseWsFrames(connId: String, buffer: ByteArrayOutputStream, dir: LiveMessage.Direction) {
         val raw = buffer.toByteArray()
         buffer.reset()
@@ -539,18 +474,11 @@ class TcpHandler(
         private const val MAX_FRAME_BYTES = 8 * 1024 * 1024
     }
 
-    /**
-     * Buffers raw bytes from [buffer] and emits each COMPLETE SF3 frame to [onMessage].
-     * Leftover incomplete bytes stay in [buffer] for the next call.
-     *
-     * SF3 framing:
-     *   Small  0x01 + 1B-len + payload          total = 2 + len
-     *   Large  0x02 + 4B-LE-len + compressed    total = 5 + compLen
-     *
-     * Sync-loss recovery: if more than MAX_RESYNC_BYTES consecutive bytes have an unknown
-     * frame type, the buffer is wiped. This prevents a single bad server chunk (e.g. an
-     * unexpected keepalive or protocol error) from permanently blocking all future events.
-     */
+    // Buffers raw bytes and emits each complete SF3 frame to onMessage, leaving
+    // incomplete bytes for the next call. Small frames are 0x01 + 1B-len + payload;
+    // large frames are 0x02 + 4B-LE-len + compressed payload. If more than
+    // MAX_RESYNC_BYTES consecutive bytes have an unknown frame type, the buffer is
+    // wiped so a single bad server chunk doesn't permanently block future events.
     private fun parseSf3Frames(
         connId: String,
         buffer: ByteArrayOutputStream,
@@ -628,8 +556,6 @@ class TcpHandler(
         if (pos < raw.size) buffer.write(raw, pos, raw.size - pos)
     }
 
-    // ── Packet building helpers ───────────────────────────────────────────────
-
     private fun sendDataToApp(conn: TcpConnState, data: ByteArray) {
         val pkt = PacketParser.buildIPv4TCPPacket(
             srcIp = conn.dstIp,
@@ -704,19 +630,11 @@ class TcpHandler(
         try { conn.channel?.close() } catch (_: Exception) {}
     }
 
-    /**
-     * Inject raw SF3-framed bytes DIRECTLY into the server socket, bypassing the
-     * outbound queue entirely.
-     *
-     * This is the preferred injection path because:
-     *   • It works even if writerLoop has crashed (closed channel is detected immediately
-     *     and a clear error is returned rather than a silent no-op).
-     *   • It acquires writeLock so bytes never interleave with the writerLoop's writes.
-     *   • It returns a concrete result: "SENT Nb" on success, "FAIL: …" on any error.
-     *
-     * Called from a background coroutine (Dispatchers.IO) in the overlay — never from
-     * the main thread — so blocking on writeLock is safe.
-     */
+    // Injects raw SF3-framed bytes directly into the server socket, bypassing the
+    // outbound queue. Preferred over the queue path because it detects a crashed
+    // writerLoop immediately (closed channel -> clear error instead of a silent
+    // no-op), acquires writeLock so bytes never interleave with writerLoop's writes,
+    // and returns a concrete result string. Called from a background coroutine only.
     fun injectDirect(connId: String, data: ByteArray): String {
         val conn = connections[connId]
             ?: return "FAIL: connId not in connections (${connections.size} active)"
@@ -736,10 +654,7 @@ class TcpHandler(
             } finally {
                 conn.writeLock.unlock()
             }
-            // Log the injected packet so it appears in LOGS alongside the server's
-            // response — this is the "exited VPN" log entry the user can diff against
-            // what the game originally sent (or against what we built in PacketInjector).
-            // We log `data` (the unframed SF3 bytes), not `payload` (which may be
+            // Log `data` (the unframed SF3 bytes), not `payload` (which may be
             // WS-wrapped), so GameProtocolParser can parse the SF3 envelope correctly.
             onMessage(conn.connId, LiveMessage(LiveMessage.Direction.OUTBOUND, data))
             result
@@ -748,19 +663,13 @@ class TcpHandler(
         }
     }
 
-    /**
-     * injectDirect on the first ESTABLISHED connection (last-resort fallback).
-     */
     fun injectDirectToAny(data: ByteArray): String {
         val conn = connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }
             ?: return "FAIL: no ESTABLISHED conn (${connections.size} tracked)"
         return injectDirect(conn.connId, data)
     }
 
-    /**
-     * Queue-based inject — kept for reference but injectDirect is preferred.
-     * Returns null if [connId] is not found or not ESTABLISHED.
-     */
+    // Queue-based inject, kept for reference — injectDirect is preferred.
     fun injectToServer(connId: String, data: ByteArray): String? {
         val conn = connections[connId]
             ?: return "FAIL: connId not in connections (${connections.size} conns tracked)"
@@ -772,9 +681,6 @@ class TcpHandler(
         else "FAIL: outboundQueue closed (writerLoop died)"
     }
 
-    /**
-     * Inject to the first ESTABLISHED connection (last-resort fallback).
-     */
     fun injectToAny(data: ByteArray): String? {
         val conn = connections.values.firstOrNull { it.status == TcpStatus.ESTABLISHED }
             ?: return "FAIL: injectToAny found no ESTABLISHED conn (${connections.size} conns)"
@@ -784,17 +690,8 @@ class TcpHandler(
         else "FAIL: queue closed on conn …${conn.connId.takeLast(16)}"
     }
 
-    /**
-     * Wraps [payload] in a WebSocket binary frame (opcode 0x2) with a random
-     * 4-byte masking key, as required for client→server WS messages (RFC 6455).
-     *
-     * Frame layout:
-     *   0x82               FIN=1, opcode=2 (binary)
-     *   0x80 | len7        MASK=1, 7-bit length  (126/127 extended for larger payloads)
-     *   [2B extended len]  if 126 ≤ len ≤ 65535
-     *   [4B masking key]
-     *   [masked payload]
-     */
+    // Wraps payload in a WebSocket binary frame (opcode 0x2) with a random 4-byte
+    // masking key, as required for client->server WS messages (RFC 6455).
     private fun wrapInWsFrame(payload: ByteArray): ByteArray {
         val len = payload.size
         val maskKey = ByteArray(4).also { java.util.Random().nextBytes(it) }

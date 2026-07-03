@@ -15,19 +15,11 @@ sealed class GameEvent {
     class LoginIn : GameEvent()
     data class Command(val name: String, val isOutbound: Boolean, val extraDetail: String = "") : GameEvent()
     data class BattleCommand(val name: String, val battleId: String?, val isOutbound: Boolean) : GameEvent()
-    /**
-     * @param commandName The raw SF3 command that triggered this event.
-     *   "event_battle_start_fight" = hero/PVP fight (high priority — always overrides current battle)
-     *   "start_fight"              = clan/brawler fight (low priority — only set if no battle active)
-     */
+    // commandName: "event_battle_start_fight" = hero/PVP fight (overrides current battle),
+    // "start_fight" = clan/brawler fight (only set if no battle already active).
     data class BattleStarted(val battleId: String, val commandName: String = "start_fight") : GameEvent()
     data class WinConfirmed(val battleId: String) : GameEvent()
-    /**
-     * Fired for outbound brawler_finish packets.
-     * @param result   "WIN" or "LOSS" (inner proto field[2]: 1=WIN, 3=LOSS)
-     * @param wonRounds  inner proto field[3] varint
-     * @param totalRounds inner proto field[5] varint (0 if absent — e.g. on LOSS)
-     */
+    // result: "WIN" or "LOSS" (inner proto field[2]: 1=WIN, 3=LOSS)
     data class BrawlerFinished(val result: String, val wonRounds: Int, val totalRounds: Int) : GameEvent()
 
     val label: String get() = when (this) {

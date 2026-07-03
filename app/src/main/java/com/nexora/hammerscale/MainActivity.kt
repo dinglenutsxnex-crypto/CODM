@@ -29,25 +29,20 @@ class MainActivity : AppCompatActivity() {
 
         viewModel = ViewModelProvider(this, ConnectionViewModelFactory())[ConnectionViewModel::class.java]
 
-        // Play/Pause button
         binding.btnPlay.setOnClickListener {
             if (viewModel.vpnRunning.value == true) {
-                // Stop VPN and overlay (don't launch app)
                 stopVpn()
             } else {
-                // Start VPN and launch game
                 requestVpnPermission()
             }
         }
 
-        // Discord link
         binding.tvDiscordLink.setOnClickListener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://discord.gg/AW9vGhVA2j")).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             })
         }
 
-        // Observe VPN state to update button icon
         viewModel.vpnRunning.observe(this) { running ->
             binding.btnPlay.setImageResource(
                 if (running) android.R.drawable.ic_media_pause
@@ -55,19 +50,15 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // Request overlay permission on first launch so it's ready when needed
         if (!Settings.canDrawOverlays(this)) {
             requestOverlayPermission()
         }
     }
 
-    // ── Overlay ───────────────────────────────────────────────────────────
-
     private fun startOverlay() {
         startService(Intent(this, OverlayService::class.java).apply {
             action = OverlayService.ACTION_START
         })
-        // After overlay starts, launch the game
         Handler(Looper.getMainLooper()).postDelayed({
             launchTargetApp()
         }, 500)
@@ -95,8 +86,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ── VPN ───────────────────────────────────────────────────────────────
-
     private fun requestVpnPermission() {
         val intent = VpnService.prepare(this)
         if (intent != null) startActivityForResult(intent, VPN_REQUEST_CODE)
@@ -108,9 +97,7 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         when (requestCode) {
             VPN_REQUEST_CODE -> if (resultCode == Activity.RESULT_OK) startVpn()
-            OVERLAY_REQUEST_CODE -> {
-                // Permission result — overlay will start automatically when VPN starts
-            }
+            OVERLAY_REQUEST_CODE -> {}
         }
     }
 
@@ -118,7 +105,6 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, TrafficVpnService::class.java).apply {
             action = TrafficVpnService.ACTION_START
         })
-        // Start overlay, then launch game
         if (Settings.canDrawOverlays(this)) {
             Handler(Looper.getMainLooper()).postDelayed({
                 startOverlay()
@@ -127,9 +113,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopVpn() {
-        // Stop overlay first
         stopOverlay()
-        // Then stop VPN
         startService(Intent(this, TrafficVpnService::class.java).apply {
             action = TrafficVpnService.ACTION_STOP
         })

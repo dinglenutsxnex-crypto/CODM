@@ -19,7 +19,6 @@ class App : android.app.Application() {
         if (checkSecurity()) {
             Log.d(TAG, "App started normally")
         }
-        // App continues - if blocked, handleBlock() kills it
     }
 
     private fun checkSecurity(): Boolean {
@@ -28,13 +27,11 @@ class App : android.app.Application() {
             if (threats.isNotEmpty()) {
                 val msg = "Blocked: ${threats.joinToString(", ")}"
                 Log.e(TAG, msg)
-                
-                // Show toast on main thread
+
                 android.os.Handler(mainLooper).post {
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                 }
-                
-                // Kill app after delay
+
                 android.os.Handler(mainLooper).postDelayed({
                     android.os.Process.killProcess(android.os.Process.myPid())
                 }, 3000)

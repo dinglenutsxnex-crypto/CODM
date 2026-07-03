@@ -71,7 +71,6 @@ class OverlayService : Service() {
 
     private var vmEventsCursor = 0
 
-    // ── Mode & user-mode toggle state ──────────────────────────────────────
     private var isUserMode = true
 
     // Which type of battle is currently active (used to color user-mode labels)
@@ -94,8 +93,6 @@ class OverlayService : Service() {
     private val switchOffColor = Color.parseColor("#FF444C56")
     private val thumbOnColor   = Color.WHITE
     private val thumbOffColor  = Color.parseColor("#FF8B949E")
-
-    // ── Event log observer ────────────────────────────────────────────────
 
     private val eventObserver = Observer<List<GameEvent>> { newList ->
         val added = if (vmEventsCursor < newList.size) newList.drop(vmEventsCursor) else emptyList()
@@ -122,14 +119,11 @@ class OverlayService : Service() {
         }
     }
 
-    // ── Battle state observer ──────────────────────────────────────────────
-
     private val battleObserver = Observer<ConnectionViewModel.BattleState?> { state ->
         currentBattleId = state?.battleId
         updateEventsPanel()
     }
 
-    // ── Clan rounds observer ───────────────────────────────────────────────
     private val clanRoundsObserver = Observer<Int?> { rounds ->
         if (rounds == null) return@Observer
         val prev = roundsToWin
@@ -152,17 +146,11 @@ class OverlayService : Service() {
         }
     }
 
-    // ── Battle sequence observer ───────────────────────────────────────────
-    // Fires when the server's inbound event_battle_start_fight is received.
-    // seq = 0-indexed sub-battle number (field[3] in params; absent = 0).
-    //
-    // For multi-fight skeleton battles (battles.json value is an array):
-    //   Use seq as the index into the array to get the rounds-to-win for THIS
-    //   specific sub-battle, then update roundsToWin and the overlay display.
-    //
-    // For single-fight battles (battles.json value is an int):
-    //   Skip entirely — roundsToWin is already set correctly from the JSON lookup
-    //   in updateEventsPanel(); no server packet analysis needed.
+    // Fires when the server's inbound event_battle_start_fight is received. seq is
+    // the 0-indexed sub-battle number (field[3] in params; absent means 0). For
+    // multi-fight skeleton battles (battles.json value is an array), seq indexes
+    // into the array to get the rounds-to-win for this sub-battle. For single-fight
+    // battles roundsToWin is already set from the JSON lookup in updateEventsPanel().
     private val battleSeqObserver = Observer<Int?> { seq ->
         if (seq == null) return@Observer
         val id = currentBattleId ?: return@Observer
@@ -188,7 +176,6 @@ class OverlayService : Service() {
         }
     }
 
-    // ── Raid fight observer ────────────────────────────────────────────────
     private val raidFightObserver = Observer<Boolean> { active ->
         val wasArmed = raidInterceptArmed   // capture before updateRaidPanel resets it
         updateRaidPanel(active)
@@ -200,7 +187,7 @@ class OverlayService : Service() {
         }
     }
 
-    // ── Game events observer (used to detect battle type for user-mode labels) ──
+    // Detects battle type from the event stream, used to color user-mode labels
     private val gameEventsForTypeObserver = Observer<List<GameEvent>> { list ->
         val last = list.lastOrNull()
         when (last) {
@@ -283,7 +270,6 @@ class OverlayService : Service() {
         }
     }
 
-    // ── Win confirmation observer ─────────────────────────────────────────
     private val winObserver = Observer<List<GameEvent>> { list ->
         val last = list.lastOrNull()
         if (last is GameEvent.WinConfirmed) {
@@ -297,8 +283,6 @@ class OverlayService : Service() {
         val last = lm.findLastVisibleItemPosition()
         return last >= adapter.itemCount - 2
     }
-
-    // ── User mode label helpers ────────────────────────────────────────────
 
     private fun updateUserModeBattleLabels() {
         val v = overlayView ?: return
@@ -352,10 +336,8 @@ class OverlayService : Service() {
         }
     }
 
-    // ── Shared intercept pipeline ─────────────────────────────────────────
-    // Single source of truth — both dev-mode buttons and user-mode auto-arm
-    // call these. No duplicated logic.
-
+    // Single source of truth for the intercept pipeline — dev-mode buttons and
+    // user-mode auto-arm both call these rather than duplicating logic.
     private fun armBattleIntercept() {
         if (interceptIsArmed) return
         val vpn = TrafficVpnService.instance ?: return
@@ -413,7 +395,6 @@ class OverlayService : Service() {
         updateBrawlerPanel()
     }
 
-    // ── Green flash helper (user-mode server-confirm feedback) ────────────
     private fun flashLabelGreen(labelResId: Int) {
         val tv = overlayView?.findViewById<TextView>(labelResId) ?: return
         tv.setTextColor(Color.parseColor("#FF3FB950"))
@@ -423,7 +404,6 @@ class OverlayService : Service() {
         }, 2_000)
     }
 
-    // ── Switch styling helper ──────────────────────────────────────────────
     @Suppress("DEPRECATION")
     private fun styleSwitch(sw: Switch) {
         val states = arrayOf(
@@ -433,8 +413,6 @@ class OverlayService : Service() {
         sw.trackTintList = ColorStateList(states, intArrayOf(switchOnColor, switchOffColor))
         sw.thumbTintList = ColorStateList(states, intArrayOf(thumbOnColor, thumbOffColor))
     }
-
-    // ── Events panel sync ──────────────────────────────────────────────────
 
     private fun updateEventsPanel() {
         val v = overlayView ?: return
@@ -553,8 +531,6 @@ class OverlayService : Service() {
         }
     }
 
-    // ── Lifecycle ──────────────────────────────────────────────────────────
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -633,8 +609,6 @@ class OverlayService : Service() {
             .build()
     }
 
-    // ── WindowManager params ──────────────────────────────────────────────
-
     private fun dp(value: Float): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
 
@@ -652,8 +626,6 @@ class OverlayService : Service() {
         gravity = Gravity.TOP or Gravity.END
         this.x = x; this.y = y
     }
-
-    // ── Mode switching ────────────────────────────────────────────────────
 
     private fun applyMode(view: View) {
         val tabRow      = view.findViewById<View>(R.id.layout_tab_row)
@@ -690,8 +662,6 @@ class OverlayService : Service() {
             modeToggleTv?.text      = "   USER MODE"
         }
     }
-
-    // ── Main overlay ──────────────────────────────────────────────────────
 
     @Suppress("DEPRECATION")
     private fun setupOverlay() {
@@ -746,7 +716,6 @@ class OverlayService : Service() {
             applyMode(view)
         }
 
-        // ── Tabs ──────────────────────────────────────────────────────────
         val tabLogs   = view.findViewById<TextView>(R.id.tab_logs)
         val tabEvents = view.findViewById<TextView>(R.id.tab_events)
         val panelEvents = view.findViewById<View>(R.id.panel_events)
@@ -770,7 +739,6 @@ class OverlayService : Service() {
             updateEventsPanel()
         }
 
-        // ── Rounds counter ────────────────────────────────────────────────
         val roundsValueTv = view.findViewById<TextView>(R.id.tv_rounds_value)
         roundsValueTv?.text = roundsToWin.toString()
 
@@ -782,7 +750,6 @@ class OverlayService : Service() {
             if (roundsToWin < 9) { roundsToWin++; roundsValueTv?.text = roundsToWin.toString() }
         }
 
-        // ── ARM MAX DMG button (raid intercept) ──────────────────────────
         view.findViewById<TextView>(R.id.btn_raid_max_dmg)?.setOnClickListener {
             if (TrafficVpnService.instance == null) {
                 view.findViewById<TextView>(R.id.tv_raid_arm_status)?.apply {
@@ -795,7 +762,6 @@ class OverlayService : Service() {
             if (raidInterceptArmed) disarmRaid() else armRaid()
         }
 
-        // ── ARM WIN button ────────────────────────────────────────────────
         view.findViewById<TextView>(R.id.btn_win_battle).setOnClickListener {
             if (TrafficVpnService.instance == null) {
                 view.findViewById<TextView>(R.id.tv_win_status)?.apply {
@@ -808,7 +774,6 @@ class OverlayService : Service() {
             if (interceptIsArmed) disarmBattleIntercept() else armBattleIntercept()
         }
 
-        // ── User mode switches ────────────────────────────────────────────
         val swEvent   = view.findViewById<Switch>(R.id.sw_event_battle)
         val swClan    = view.findViewById<Switch>(R.id.sw_clan_battle)
         val swRaid    = view.findViewById<Switch>(R.id.sw_raid)
@@ -883,7 +848,6 @@ class OverlayService : Service() {
             }
         }
 
-        // ── Row click handlers for user mode toggles ─────────────────────
         view.findViewById<View>(R.id.row_event_battle)?.setOnClickListener {
             swEvent.isChecked = !swEvent.isChecked
         }
@@ -897,7 +861,6 @@ class OverlayService : Service() {
             swBrawler.isChecked = !swBrawler.isChecked
         }
 
-        // ── ARM BRAWLER WIN button (dev mode brawler intercept) ──────────
         view.findViewById<TextView>(R.id.btn_brawler_win)?.setOnClickListener {
             if (TrafficVpnService.instance == null) {
                 view.findViewById<TextView>(R.id.tv_brawler_arm_status)?.apply {
@@ -923,8 +886,6 @@ class OverlayService : Service() {
         overlayView?.let { try { windowManager.removeView(it) } catch (_: Exception) {} }
         overlayView = null
     }
-
-    // ── Mini badge ────────────────────────────────────────────────────────
 
     private fun showMini() {
         val view = LayoutInflater.from(this).inflate(R.layout.layout_overlay_mini, null)
@@ -983,8 +944,6 @@ class OverlayService : Service() {
         miniView = null
     }
 
-    // ── Drag ──────────────────────────────────────────────────────────────
-
     private fun attachDrag(handle: View, root: View, params: WindowManager.LayoutParams) {
         var startX = 0; var startY = 0
         var rawX = 0f; var rawY = 0f
@@ -1017,8 +976,6 @@ class OverlayService : Service() {
         }
     }
 
-    // ── onDestroy ─────────────────────────────────────────────────────────
-
     override fun onDestroy() {
         AppState.viewModel.gameEvents.removeObserver(eventObserver)
         AppState.viewModel.gameEvents.removeObserver(winObserver)
@@ -1035,8 +992,6 @@ class OverlayService : Service() {
         super.onDestroy()
     }
 }
-
-// ── RecyclerView adapter ───────────────────────────────────────────────────
 
 class GameEventAdapter(private val items: List<GameEvent>) :
     RecyclerView.Adapter<GameEventAdapter.VH>() {

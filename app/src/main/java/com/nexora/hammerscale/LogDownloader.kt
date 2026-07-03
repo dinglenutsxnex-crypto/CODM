@@ -11,14 +11,9 @@ import java.util.zip.ZipOutputStream
 
 object LogDownloader {
 
-    /**
-     * Naming convention with command names for AI readability:
-     *   - Group consecutive messages by direction
-     *   - Each group gets a sequential index per direction (user_ping_1, user_ping_2 / server_login_1, ...)
-     *   - Command name extracted from message or "unknown" if unclassified
-     *   - If a group has multiple packets: user_ping_2.1.bin, user_ping_2.2.bin …
-     *   - If a group has one packet:      user_ping_1.bin (no decimal)
-     */
+    // Groups consecutive messages by direction, numbering each group per direction
+    // (user_ping_1, user_ping_2 / server_login_1, ...). Multi-packet groups get a
+    // decimal suffix (user_ping_2.1.bin, user_ping_2.2.bin); single-packet groups don't.
     fun downloadAndShare(context: Context, messages: List<LiveMessage>) {
         if (messages.isEmpty()) {
             Toast.makeText(context, "No messages to export", Toast.LENGTH_SHORT).show()
@@ -26,7 +21,6 @@ object LogDownloader {
         }
 
         try {
-            // ── Group consecutive messages by direction ────────────────
             data class Group(val dir: LiveMessage.Direction, val packets: MutableList<Pair<ByteArray, String>>)
             val groups = mutableListOf<Group>()
             for (msg in messages) {
@@ -38,7 +32,6 @@ object LogDownloader {
                 }
             }
 
-            // ── Build zip ─────────────────────────────────────────────
             val logsDir = File(context.cacheDir, "logs").also { it.mkdirs() }
             val ts = System.currentTimeMillis()
             val zipFile = File(logsDir, "hammerscale_$ts.zip")
@@ -66,7 +59,6 @@ object LogDownloader {
                 }
             }
 
-            // ── Share via FileProvider ────────────────────────────────
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.provider",

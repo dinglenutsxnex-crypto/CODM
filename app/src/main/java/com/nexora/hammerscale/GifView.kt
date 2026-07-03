@@ -6,15 +6,10 @@ import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
 
-/**
- * Renders an animated GIF from a raw resource with a luma-keyed transparency:
- *   alpha = R + G + B (clamped 0-255)
- * Pure black pixels → fully transparent.
- * Bright cyan/white pixels → fully opaque.
- * Dark-edge pixels → semi-transparent (natural soft glow edge).
- *
- * Uses the deprecated but fully functional Movie API — no extra dependencies.
- */
+// Renders an animated GIF from a raw resource with luma-keyed transparency:
+// alpha = R + G + B (clamped 0-255), so black pixels vanish and bright pixels
+// stay opaque, giving a soft glow edge. Uses the deprecated but functional
+// Movie API to avoid pulling in an extra GIF library.
 @Suppress("DEPRECATION")
 class GifView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
@@ -23,21 +18,18 @@ class GifView @JvmOverloads constructor(
     private var movie: Movie? = null
     private var movieStart = 0L
 
-    // Luma → alpha: A' = R + G + B.
-    // Black (0,0,0) → A=0 (transparent). Bright cyan (0,200,200) → A=400→255 (opaque).
     private val lumaKeyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         colorFilter = ColorMatrixColorFilter(ColorMatrix(floatArrayOf(
-            1f, 0f, 0f, 0f, 0f,   // R' = R
-            0f, 1f, 0f, 0f, 0f,   // G' = G
-            0f, 0f, 1f, 0f, 0f,   // B' = B
-            1f, 1f, 1f, 0f, 0f    // A' = R+G+B  (clamped to 255 by hardware)
+            1f, 0f, 0f, 0f, 0f,
+            0f, 1f, 0f, 0f, 0f,
+            0f, 0f, 1f, 0f, 0f,
+            1f, 1f, 1f, 0f, 0f
         )))
     }
 
     private val clipPath = Path()
 
     init {
-        // Software layer required for ColorMatrixColorFilter to affect alpha output
         setLayerType(LAYER_TYPE_SOFTWARE, null)
     }
 
@@ -60,7 +52,6 @@ class GifView @JvmOverloads constructor(
         val duration = m.duration().let { if (it > 0) it else 1000 }
         m.setTime(((now - movieStart) % duration).toInt())
 
-        // Scale to fill the circular view, centred
         val mw = m.width().toFloat()
         val mh = m.height().toFloat()
         val scale = maxOf(width / mw, height / mh)
@@ -68,12 +59,12 @@ class GifView @JvmOverloads constructor(
         val dy = (height - mh * scale) / 2f
 
         canvas.save()
-        canvas.clipPath(clipPath)       // circular crop
+        canvas.clipPath(clipPath)
         canvas.translate(dx, dy)
         canvas.scale(scale, scale)
         m.draw(canvas, 0f, 0f, lumaKeyPaint)
         canvas.restore()
 
-        postInvalidateOnAnimation()     // drive continuous animation
+        postInvalidateOnAnimation()
     }
 }

@@ -27,12 +27,10 @@ class ConnectionViewModel : ViewModel() {
     private val _gameSocketId = MutableLiveData<String?>(null)
     val gameSocketId: LiveData<String?> = _gameSocketId
 
-    // Tracks which connection carried the most recent battle-start packet.
     // May differ from gameSocketId (HANDSHAKE conn) if SF3 uses separate connections.
     private val _battleSocketId = MutableLiveData<String?>(null)
     val battleSocketId: LiveData<String?> = _battleSocketId
 
-    // Tracks the highest outbound packet counter seen so far in the session.
     // Injected packets must use this + 1 so the server doesn't treat them as duplicates.
     private val _outboundCounter = AtomicLong(0L)
     val nextInjectCounter: Long get() {
@@ -49,39 +47,25 @@ class ConnectionViewModel : ViewModel() {
     private val _currentBattle = MutableLiveData<BattleState?>(null)
     val currentBattle: LiveData<BattleState?> = _currentBattle
 
-    // Auto-detected round count from the server's clan_start_fight response.
-    // Null until a clan battle response is sniffed; reset on clearAll().
+    // Round count auto-detected from the server's clan_start_fight response.
     private val _clanRounds = MutableLiveData<Int?>(null)
     val clanRounds: LiveData<Int?> = _clanRounds
 
-    // Sub-battle sequence index from the server's inbound event_battle_start_fight response.
     // 0 = first fight (field[3] absent), N = Nth fight (0-indexed). Null until first sniff.
-    // Reset on clearAll() and on each new BattleStarted so stale values don't persist.
     private val _battleSeq = MutableLiveData<Int?>(null)
     val battleSeq: LiveData<Int?> = _battleSeq
 
     // True between outbound raid_fight_start and inbound raid_fight_finish.
-    // Drives the ARM MAX DMG button visibility in the overlay.
     private val _raidFightActive = MutableLiveData<Boolean>(false)
     val raidFightActive: LiveData<Boolean> = _raidFightActive
 
-    // SFA port detection - defaults to 443, updated when we detect the game server port
     private val _sfaPort = java.util.concurrent.atomic.AtomicInteger(443)
     val sfaPort: Int get() = _sfaPort.get()
 
-    /**
-     * Set clan rounds directly from TCP handler (called synchronously on inbound frame).
-     * This bypasses the async message queue to ensure rounds are set before any user action.
-     */
     fun setClanRounds(rounds: Int) {
         _clanRounds.postValue(rounds)
     }
 
-    /**
-     * Set the sub-battle sequence index from the server's inbound event_battle_start_fight.
-     * 0 = first fight (field[3] absent), N = Nth fight (0-indexed).
-     * Called from TcpHandler on each inbound server response — fires before the user can arm.
-     */
     fun setBattleSeq(seq: Int) {
         _battleSeq.postValue(seq)
     }
@@ -124,11 +108,8 @@ class ConnectionViewModel : ViewModel() {
         }
     }
 
-    /**
-     * Returns every LiveMessage from every connection, sorted by timestamp (oldest first).
-     * Used by LogDownloader so exported zips contain BOTH directions from ALL sockets —
-     * auth/game socket AND battle socket — rather than just gameSocketId.
-     */
+    // Returns every LiveMessage from every connection, sorted by timestamp, so exported
+    // zips include both the auth/game socket and battle socket, not just gameSocketId.
     fun getAllMessages(): List<LiveMessage> {
         return connectionMap.values
             .flatMap { conn -> synchronized(conn.messages) { conn.messages.toList() } }
@@ -137,12 +118,9 @@ class ConnectionViewModel : ViewModel() {
 
     fun addMessage(id: String, message: LiveMessage) {
         connectionMap[id]?.let { conn ->
-            // Update outbound counter SYNCHRONOUSLY before launching the coroutine.
-            // The Win button reads _outboundCounter on the main thread. If this update
-            // were inside the coroutine (Dispatchers.Default) there would be a race:
-            // the latest ping counter might not be committed yet when the user taps Win,
-            // causing nextInjectCounter to return a counter the server already processed →
-            // server silently drops the duplicate → no WIN response.
+            // Must update synchronously, not inside the coroutine below — otherwise the Win
+            // button (main thread) can read a stale counter and inject a duplicate the server
+            // silently drops, resulting in no WIN response.
             if (message.direction == LiveMessage.Direction.OUTBOUND) {
                 val counter = GameProtocolParser.extractCounter(message.data)
                 if (counter != null) {
@@ -169,8 +147,6 @@ class ConnectionViewModel : ViewModel() {
 
                 val event = GameProtocolParser.parse(message.data, message.direction)
                 if (event != null) {
-                    // Raid fight state: active from outbound raid_fight_start
-                    // until inbound raid_fight_finish (server has processed our result).
                     if (event is GameEvent.Command) {
                         when {
                             event.isOutbound  && event.name == "raid_fight_start"  -> _raidFightActive.postValue(true)
@@ -187,30 +163,20 @@ class ConnectionViewModel : ViewModel() {
                     when (event) {
                         is GameEvent.BattleStarted -> {
                             if (event.battleId != "?") {
-                                // event_battle_start_fight = hero/PVP fight — ALWAYS overrides
-                                // whatever is in currentBattle. This prevents a background clan
-                                // fight (start_fight) that fired first from locking us into the
-                                // wrong battle ID when the actual fight starts.
-                                // start_fight = clan/brawler — lower priority, only set if idle.
+                                // event_battle_start_fight (hero/PVP) always overrides whatever
+                                // is tracked, so a clan start_fight firing first doesn't stick.
                                 val isHeroFight = event.commandName == "event_battle_start_fight"
                                 if (isHeroFight || _currentBattle.value == null) {
                                     _currentBattle.postValue(BattleState(event.battleId))
-                                    // Reset sub-battle seq so stale index from a previous multi-
-                                    // battle run doesn't linger until the server responds.
                                     if (isHeroFight) _battleSeq.postValue(null)
-                                    // Record WHICH connection carried this battle packet — may
-                                    // differ from gameSocketId if SF3 uses separate conns.
                                     _battleSocketId.postValue(id)
                                 }
                             }
                         }
                         is GameEvent.WinConfirmed -> {
-                            // "?" = wildcard emitted for event_battle_finish_fight server ACK —
-                            // the server sends its own sequential fight counter in field[1] (e.g.
-                            // 61028), not the client's template battle ID (e.g. 3001602). The
-                            // parser uses "?" to mean "clear unconditionally". For other commands
-                            // (finish_fight clan fights) the server echoes the client ID, so the
-                            // ID check still guards hero fights from being wiped by clan wins.
+                            // "?" means the server ack used its own sequential fight counter
+                            // instead of echoing the client's template battle ID, so we clear
+                            // unconditionally in that case; otherwise the ID must still match.
                             val tracked = _currentBattle.value?.battleId
                             if (tracked == null || event.battleId == "?" || tracked == event.battleId) {
                                 _currentBattle.postValue(null)
@@ -223,10 +189,9 @@ class ConnectionViewModel : ViewModel() {
                             if (event.name in setOf("finish_fight", "event_battle_finish_fight", "clan_finish_fight")) {
                                 _currentBattle.postValue(null)
                             }
-                            // SF3 opens a NEW TCP connection for event_battle_finish_fight —
-                            // different from the start_fight connection (which is already closed).
-                            // Capture THAT connection as battleSocketId so any WIN injection
-                            // pressed just before (or at the same moment) goes to the right socket.
+                            // event_battle_finish_fight opens a new TCP connection distinct
+                            // from the (already closed) start_fight one — track it so a WIN
+                            // injection targets the right socket.
                             if (event.isOutbound && event.name == "event_battle_finish_fight") {
                                 _battleSocketId.postValue(id)
                             }
@@ -268,7 +233,6 @@ class ConnectionViewModel : ViewModel() {
         return synchronized(conn.messages) { conn.messages.toList() }
     }
 
-    /** Inject a synthetic event directly (e.g. locally-injected finish_fight). */
     fun emitEvent(event: GameEvent) {
         synchronized(gameEventList) {
             gameEventList.add(event)

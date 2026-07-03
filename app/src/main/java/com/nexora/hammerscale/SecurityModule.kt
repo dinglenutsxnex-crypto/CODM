@@ -5,9 +5,6 @@ import android.content.pm.PackageManager
 import android.util.Log
 import java.io.File
 
-/**
- * Simple Security Module for HammerScale
- */
 object SecurityModule {
 
     private const val TAG = "Security"

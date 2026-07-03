@@ -136,34 +136,16 @@ class TrafficVpnService : VpnService() {
         }
     }
 
-    /**
-     * Inject a crafted packet into the battle connection's outbound stream.
-     *
-     * Priority:
-     *   1. battleSocketId — the connection that carried the BattleStarted packet
-     *      (may differ from gameSocketId if SF3 uses separate auth/battle connections)
-     *   2. gameSocketId — the HANDSHAKE connection
-     *   3. Any ESTABLISHED TCP connection (last resort)
-     *
-     * If the connection is WebSocket the handler automatically wraps the payload
-     * in a masked WS binary frame before writing to the server.
-     */
+    // Falls back through battleSocketId (carried the BattleStarted packet), then
+    // gameSocketId (the handshake connection), then any ESTABLISHED connection.
     fun injectToGameSocket(data: ByteArray) {
         injectToGameSocketDiag(data)
     }
 
-    /**
-     * Direct-write injection — writes bytes straight to the server socket with a
-     * per-connection lock, bypassing the outbound queue.  Returns a diagnostic string.
-     *
-     * Priority:
-     *   1. battleSocketId — connection that carried BattleStarted
-     *   2. gameSocketId   — HANDSHAKE connection
-     *   3. any ESTABLISHED connection
-     *
-     * This must be called from a background thread / IO coroutine; the write lock
-     * may block briefly if writerLoop is mid-write.
-     */
+    // Direct-write injection: writes bytes straight to the server socket with a
+    // per-connection lock, bypassing the outbound queue, and returns a diagnostic
+    // string. Must be called from a background thread/IO coroutine since the write
+    // lock may block briefly if writerLoop is mid-write.
     fun injectDirect(data: ByteArray): String {
         val handler = tcpHandler ?: return "FAIL: tcpHandler is null (VPN not running)"
         val vm = AppState.viewModel
@@ -182,11 +164,8 @@ class TrafficVpnService : VpnService() {
         }
     }
 
-    /**
-     * Same as injectToGameSocket but returns a one-line diagnostic string so the
-     * overlay can display exactly what happened (or null if tcpHandler is null).
-     * Kept for backward compatibility — prefer injectDirect.
-     */
+    // Same as injectToGameSocket but returns a one-line diagnostic string so the
+    // overlay can display exactly what happened. Kept for compatibility — prefer injectDirect.
     fun injectToGameSocketDiag(data: ByteArray): String? {
         val handler = tcpHandler ?: return null
         val vm = AppState.viewModel
@@ -208,31 +187,18 @@ class TrafficVpnService : VpnService() {
         }
     }
 
-    /**
-     * Arm the ARM-WIN intercept: the next outbound event_battle_finish_fight packet
-     * from the SF3 game client will be silently replaced with a crafted WIN packet
-     * (same counter, same connection) so the server responds on the connection the
-     * game is already waiting on, causing the game to display the WIN screen.
-     */
     fun armIntercept(roundsToWin: Int = 3) {
         tcpHandler?.armIntercept(roundsToWin)
     }
 
-    /** Cancel a previously armed intercept without firing it. */
     fun disarmIntercept() {
         tcpHandler?.disarmIntercept()
     }
 
-    /** Arm the raid damage intercept — next outbound raid_fight_finish will report max damage (boss killed). */
     fun armRaidIntercept() { tcpHandler?.armRaidIntercept() }
-
-    /** Cancel a previously armed raid intercept without firing it. */
     fun disarmRaidIntercept() { tcpHandler?.disarmRaidIntercept() }
 
-    /** Arm the brawler WIN intercept — next outbound brawler_finish is rebuilt as a WIN. */
     fun armBrawlerIntercept() { tcpHandler?.armBrawlerIntercept() }
-
-    /** Cancel a previously armed brawler intercept without firing it. */
     fun disarmBrawlerIntercept() { tcpHandler?.disarmBrawlerIntercept() }
 
     fun stopVpn() {

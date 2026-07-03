@@ -30,7 +30,6 @@ data class LiveMessage(
         return SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date(timestamp))
     }
 
-    /** Filename-safe command name: lowercase, underscores, or "unknown" */
     val filenameTag: String get() {
         return commandName?.lowercase()?.replace("-", "_") ?: "unknown"
     }

@@ -6,35 +6,30 @@ import java.nio.ByteOrder
 import java.util.zip.Deflater
 import java.util.zip.Inflater
 
-/**
- * Builds SF3 wire-format packets for injection.
- *
- * Wire format:
- *   Small  [0x01][1B len][protobuf envelope]          payload <= 255 bytes
- *   Large  [0x02][4B LE len][raw-deflate protobuf envelope]  payload > 255 bytes
- *
- * Outer protobuf envelope:
- *   field[1] varint = counter   (session packet sequence number — must be last seen + 1)
- *   field[2] string = command
- *   field[3] bytes  = params
- *
- * WIN params verified from 3002601_battle_win capture / user_194.7.bin (REAL WIN):
- *
- *   field[1]  varint = battleId
- *   field[4]  varint = 1       WIN  ← NOT 3. The game sends 3 on a LOSS — do NOT copy that.
- *   field[5]  varint = rounds   wonRounds  (absent in loss packet)
- *   field[6]  bytes  = {field[1] = ts_ms}  live timestamp proto
- *   field[7]  varint = rounds   totalRounds  (game sends 1 on loss)
- *   field[10] bytes  = WIN_ITEMS  equipped items (empty in loss)
- *   field[13] bytes  = WIN_STATS  71-byte fight stats (2-byte junk in loss)
- *   field[14] varint = 28      player level (absent in loss)
- */
+// Builds SF3 wire-format packets for injection.
+//
+// Wire format:
+//   Small  [0x01][1B len][protobuf envelope]                  payload <= 255 bytes
+//   Large  [0x02][4B LE len][raw-deflate protobuf envelope]   payload > 255 bytes
+//
+// Outer protobuf envelope:
+//   field[1] varint = counter   (session packet sequence number — must be last seen + 1)
+//   field[2] string = command
+//   field[3] bytes  = params
+//
+// WIN params layout:
+//   field[1]  varint = battleId
+//   field[4]  varint = 1       WIN (the game sends 3 on a LOSS — don't copy that)
+//   field[5]  varint = rounds   wonRounds  (absent in loss packet)
+//   field[6]  bytes  = {field[1] = ts_ms}  live timestamp proto
+//   field[7]  varint = rounds   totalRounds  (game sends 1 on loss)
+//   field[10] bytes  = WIN_ITEMS  equipped items (empty in loss)
+//   field[13] bytes  = WIN_STATS  71-byte fight stats (2-byte junk in loss)
+//   field[14] varint = 28      player level (absent in loss)
 object PacketInjector {
 
-    // ── Brawler WIN constants (verified from user_137.3.bin WIN capture) ─────
-    // Items:  4 equipped items (IDs 1617, 1618, 6617, 6620; levels 1, 1, 2, 2)
-    // Stats:  54-byte fight stats from the real brawler WIN packet
-    // Rounds: 5 round sub-messages from brawler WIN inner proto field[4]
+    // Brawler WIN constants: 4 equipped items (IDs 1617, 1618, 6617, 6620; levels 1, 1, 2, 2),
+    // 54-byte fight stats, and 5 round sub-messages for inner proto field[4].
     private val BRAWLER_WIN_ITEMS = byteArrayOf(
         0x0a, 0x05, 0x08, 0xd1.toByte(), 0x0c, 0x10, 0x01,
         0x0a, 0x05, 0x08, 0xd2.toByte(), 0x0c, 0x10, 0x01,
@@ -58,10 +53,8 @@ object PacketInjector {
         byteArrayOf(0x08, 0x07)
     )
 
-    // ── WIN constants from 3002601_battle_win / user_194.7.bin ───────────────
-    // Items:  two equipped items, IDs 1617 + 1618, both level 4
-    // Stats:  71-byte fight stats blob from the real win packet
-    // Level:  28 (field[14] in the real win packet)
+    // WIN constants: two equipped items (IDs 1617 + 1618, both level 4), 71-byte fight
+    // stats blob, and player level 28 (field[14]).
     private val WIN_ITEMS = byteArrayOf(
         0x0a, 0x05, 0x08, 0xd1.toByte(), 0x0c, 0x10, 0x04,
         0x0a, 0x05, 0x08, 0xd2.toByte(), 0x0c, 0x10, 0x04
@@ -76,23 +69,11 @@ object PacketInjector {
     )
     private const val WIN_LEVEL = 28L
 
-    /**
-     * Surgically patch the game's own finish_fight packet to report a WIN.
-     *
-     * Takes the raw SF3 frame the game was about to send, makes a copy, and makes
-     * the minimum edits required for the server to accept it as a WIN:
-     *
-     *   1. Flips params.field[4] from 3 (LOSS) → 1 (WIN) in-place.
-     *   2. Fixes params.field[7] (totalRounds) in-place to [roundsToWin].
-     *   3. Appends params.field[5] = [roundsToWin] (wonRounds) if absent.
-     *      The server validates "check result and wonRounds" — result=WIN without
-     *      wonRounds (or with wonRounds ≠ totalRounds) gets an IllegalArgumentException.
-     *
-     * All other bytes — battleId, counter, seed, items, stats, level — are
-     * preserved exactly as the game sent them.
-     *
-     * Returns the patched packet on success, or null if parsing fails (caller logs and drops).
-     */
+    // Surgically patches the game's own finish_fight packet to report a WIN: flips
+    // params.field[4] from 3 (LOSS) to 1 (WIN), fixes field[7] (totalRounds) to
+    // roundsToWin, and appends field[5] (wonRounds) if absent — the server rejects a
+    // WIN result whose wonRounds doesn't match totalRounds. Everything else (battleId,
+    // counter, seed, items, stats, level) is preserved as the game sent it.
     fun patchFinishFightToWin(data: ByteArray, roundsToWin: Int = 3): ByteArray? {
         if (data.size < 3 || (data[0].toInt() and 0xFF) != 0x01) return null
         val frameLen = data[1].toInt() and 0xFF
@@ -196,20 +177,10 @@ object PacketInjector {
         return null
     }
 
-    /**
-     * Patches the game's own raid_fight_finish packet so that params.field[2] fixed32
-     * (the damage/boss_max_hp ratio) is set to 1.0 — boss reduced to 0 HP.
-     *
-     * Two cases handled:
-     *   • field[2] present  (player dealt real damage): overwrite the 4 bytes in-place
-     *     with [0x00, 0x00, 0x80, 0x3F] (LE IEEE 754 float 1.0).  No length changes.
-     *   • field[2] absent   (player dealt 0 damage): the game omits the ratio field
-     *     entirely.  In this case we inject tag 0x15 + 4-byte 1.0 at the front of the
-     *     existing params blob and rebuild the envelope via envelope().  This means the
-     *     intercept works even when you deal zero actual damage.
-     *
-     * Returns the patched frame on success, or null if the outer frame cannot be parsed.
-     */
+    // Patches the game's own raid_fight_finish packet so params.field[2] fixed32
+    // (damage/boss_max_hp ratio) is set to 1.0 — boss reduced to 0 HP. If field[2] is
+    // present the 4 bytes are overwritten in-place; if it's absent (0 damage dealt),
+    // it's injected at the front of the params blob and the envelope is rebuilt.
     fun patchRaidFightFinishToMaxDamage(data: ByteArray): ByteArray? {
         if (data.size < 3 || (data[0].toInt() and 0xFF) != 0x01) return null
         val frameLen = data[1].toInt() and 0xFF
@@ -217,7 +188,7 @@ object PacketInjector {
         if (data.size < protoEnd) return null
 
         var pos = 2
-        var outerCounter = 0L  // captured from outer field[1] for envelope rebuild
+        var outerCounter = 0L
         while (pos < protoEnd) {
             val tagByte = data[pos].toInt() and 0xFF; pos++
             val fieldNum = tagByte ushr 3; val wireType = tagByte and 7
@@ -291,22 +262,13 @@ object PacketInjector {
         return null
     }
 
-    /**
-     * Intercepts an inbound server brawler_finish 0x02 frame and patches the result to WIN.
-     *
-     * Real-time brawler duels send fight data via a binary game-session protocol, NOT as an
-     * SF3 brawler_finish command from the client. The server therefore never receives a
-     * patchable outbound SF3 frame — it receives binary session data and autonomously sends
-     * back an SF3 brawler_finish response. This function intercepts that INBOUND response
-     * before it reaches the game client and flips the result field.
-     *
-     * Patch: params.field[2].field[5]  2 (LOSS) → 1 (WIN).
-     * All other bytes (rewards, ELO delta, match stats) are preserved so the game can parse
-     * the response normally; only the result indicator is changed.
-     *
-     * Returns patched data on success, or null if no complete brawler_finish frame is present
-     * in [data] (frame arrives split across TCP reads — caller falls back to unpatched).
-     */
+    // Real-time brawler duels send fight data via a binary game-session protocol rather
+    // than an SF3 brawler_finish command, so the server never receives a patchable
+    // outbound frame — it autonomously sends back an SF3 brawler_finish response
+    // instead. This intercepts that inbound response before it reaches the game
+    // client and flips params.field[2].field[5] from 2 (LOSS) to 1 (WIN), leaving
+    // rewards/ELO/match stats untouched. Returns null if no complete brawler_finish
+    // frame is present yet (split across TCP reads — caller falls back to unpatched).
     fun patchInboundBrawlerFinishToWin(data: ByteArray): ByteArray? {
         var pos = 0
         while (pos < data.size) {
@@ -339,10 +301,8 @@ object PacketInjector {
         return null
     }
 
-    /**
-     * Verifies the decompressed proto is a brawler_finish, locates the result byte
-     * (params.field[2].field[5]), flips it to 1 (WIN), then re-encodes as a 0x02 frame.
-     */
+    // Verifies the decompressed proto is a brawler_finish, locates the result byte
+    // (params.field[2].field[5]), flips it to 1 (WIN), then re-encodes as a 0x02 frame.
     private fun tryPatchInboundBrawlerProto(rawProto: ByteArray): ByteArray? {
         var counter = -1L
         var paramsStart = -1; var paramsLen = -1
@@ -436,25 +396,14 @@ object PacketInjector {
         return null
     }
 
-    /**
-     * Rebuilds the game's own brawler_finish packet so the server records a WIN.
-     *
-     * Unlike patchFinishFightToWin (surgical byte-flip), brawler_finish requires a
-     * FULL inner-proto rebuild because WIN and LOSS have completely different field
-     * sets: WIN has fields 1–7 (including 5 round entries in field[4]); LOSS is
-     * missing fields 4, 5, and 6.
-     *
-     * Steps:
-     *   1. Decode the game's frame (0x01 or 0x02) → extract outer counter + params.field[1]
-     *      (match info bytes that identify the opponent — kept so the server can resolve
-     *      the correct PvP session).
-     *   2. Rebuild inner proto: field[1]=matchInfo, field[2]=1 (WIN), field[3]=2 (wonRounds),
-     *      five field[4] round entries, field[5]=2 (totalRounds), field[6]=BRAWLER_WIN_ITEMS,
-     *      field[7]=BRAWLER_WIN_STATS.
-     *   3. Re-encode as 0x02 frame (always; the rebuilt WIN proto is always > 255 bytes).
-     *
-     * Returns null if the frame cannot be parsed (caller logs and drops the patch).
-     */
+    // Rebuilds the game's own brawler_finish packet so the server records a WIN.
+    // Unlike patchFinishFightToWin's surgical byte-flip, this needs a full
+    // inner-proto rebuild because WIN and LOSS have different field sets: WIN has
+    // fields 1-7 (with 5 round entries in field[4]), LOSS is missing 4, 5, and 6.
+    // The game's frame is decoded to extract the outer counter and the opponent's
+    // match info (params.field[1]) so the server can resolve the correct PvP
+    // session, then the inner proto is rebuilt and always re-encoded as a 0x02
+    // frame since the WIN proto exceeds 255 bytes. Returns null if unparseable.
     fun patchBrawlerFinishToWin(data: ByteArray): ByteArray? {
         // Find the brawler_finish SF3 frame — it may not be at byte 0 if multiple
         // SF3 frames were coalesced into one TCP segment by the kernel.
@@ -494,12 +443,6 @@ object PacketInjector {
         return null
     }
 
-    /**
-     * Given a raw (decompressed) SF3 envelope proto that is a brawler_finish,
-     * rebuilds the inner params as a full WIN and returns the re-encoded SF3 frame
-     * (always 0x02 since the WIN proto exceeds 255 bytes). Returns null if this
-     * proto is not a brawler_finish or if the counter cannot be extracted.
-     */
     private fun tryPatchBrawlerProto(rawProto: ByteArray): ByteArray? {
         var pos = 0
         var counter = -1L
@@ -568,7 +511,6 @@ object PacketInjector {
         return envelope("brawler_finish", newParams, counter)
     }
 
-    /** Extract the first field[1] bytes value from a proto blob; null on parse failure. */
     private fun extractBytesField1(data: ByteArray): ByteArray? {
         var pos = 0
         while (pos < data.size) {
@@ -592,7 +534,6 @@ object PacketInjector {
         return null
     }
 
-    /** Read a varint from [data] at [start]; returns (value, bytesConsumed) or null. */
     private fun readVarintAt(data: ByteArray, start: Int): Pair<Long, Int>? {
         var value = 0L; var shift = 0; var i = start
         while (i < data.size) {
@@ -605,7 +546,6 @@ object PacketInjector {
         return null
     }
 
-    /** Raw inflate (windowBits = -15, no zlib header). Mirrors rawDeflate. */
     private fun rawInflate(data: ByteArray): ByteArray? = try {
         val inflater = Inflater(true)
         inflater.setInput(data)
@@ -619,8 +559,6 @@ object PacketInjector {
         inflater.end()
         out.toByteArray().takeIf { it.isNotEmpty() }
     } catch (_: Exception) { null }
-
-    // ── Proto writer ──────────────────────────────────────────────────────
 
     private fun proto(block: ProtoWriter.() -> Unit): ByteArray {
         val w = ProtoWriter()
@@ -644,10 +582,7 @@ object PacketInjector {
         }
     }
 
-    /**
-     * Raw deflate (no zlib header/trailer). Matches Python: zlib.compress(data, 6)[2:-4]
-     * and is required for the SF3 large-packet (0x02) framing.
-     */
+    // No zlib header/trailer, required for the SF3 large-packet (0x02) framing.
     private fun rawDeflate(data: ByteArray): ByteArray {
         val deflater = Deflater(6, true)
         deflater.setInput(data)
@@ -661,8 +596,6 @@ object PacketInjector {
         deflater.end()
         return out.toByteArray()
     }
-
-    // ── Low-level proto writer ────────────────────────────────────────────
 
     private class ProtoWriter {
         private val buf = mutableListOf<Byte>()

@@ -6,25 +6,19 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.Inflater
 
-/**
- * Parses the SF3 custom binary protocol.
- *
- * Small packet:  [0x01][1B length][raw protobuf payload]
- * Large packet:  [0x02][4B LE length][raw-deflate compressed protobuf payload]
- *
- * Outer protobuf envelope:
- *   field[1] varint  = controller  (23=battle-start server, 34=battle-finish client, etc.)
- *   field[2] string  = command     ("HANDSHAKE", "LOGIN", "event_battle_start_fight", etc.)
- *   field[3] bytes   = params (nested protobuf)
- *
- * ── Battle ID extraction (from captured packets) ──────────────────────────
- * Outbound event_battle_start_fight params: {field[1] varint = battleId}
- * Outbound event_battle_finish_fight params: {field[1]=battleId, field[4]=3, ...}
- * → Battle ID is ALWAYS params.field[1] varint in outbound packets.
- *
- * Server's inbound event_battle_start_fight has completely different params
- * (field[1] = 60926, not a battle ID) → BattleStarted must only fire for outbound.
- */
+// Parses the SF3 custom binary protocol.
+//
+// Small packet:  [0x01][1B length][raw protobuf payload]
+// Large packet:  [0x02][4B LE length][raw-deflate compressed protobuf payload]
+//
+// Outer protobuf envelope:
+//   field[1] varint  = controller  (23=battle-start server, 34=battle-finish client, etc.)
+//   field[2] string  = command     ("HANDSHAKE", "LOGIN", "event_battle_start_fight", etc.)
+//   field[3] bytes   = params (nested protobuf)
+//
+// Battle ID is always params.field[1] varint in outbound packets. The server's inbound
+// event_battle_start_fight has different params (field[1] isn't a battle ID), so
+// BattleStarted only fires for outbound packets.
 object GameProtocolParser {
 
     private val BATTLE_COMMANDS = setOf(
@@ -41,28 +35,22 @@ object GameProtocolParser {
     fun parse(data: ByteArray, direction: LiveMessage.Direction): GameEvent? {
         if (data.size < 3) return null
 
-        // ── Proto parsing first (most accurate — resolves varints properly) ────
         val proto = extractPayload(data)
         if (proto != null) {
             val protoResult = try { parseEnvelope(proto, direction) } catch (_: Exception) { null }
             if (protoResult != null) return protoResult
         }
 
-        // ── Raw-text fallback — catches commands in non-standard framing ────
         val rawText = data.toString(Charsets.ISO_8859_1)
         return rawTextScan(rawText, direction)
     }
 
-    // ── Raw-text fast scan (skims every byte for command strings) ─────────
-
     private fun rawTextScan(text: String, dir: LiveMessage.Direction): GameEvent? {
         val isOut = dir == LiveMessage.Direction.OUTBOUND
 
-        // ONLY fire BattleStarted for outbound packets — server echoes the same
-        // command with entirely different params that don't contain the battle ID.
-        // Check event_battle_start_fight FIRST because start_fight is a substring of it —
-        // a set iteration order is undefined so we'd risk misclassifying the high-priority
-        // hero fight as a low-priority clan fight if start_fight matched first.
+        // Only fire BattleStarted for outbound packets — the server echoes the same
+        // command with different params that don't contain the battle ID. Check
+        // event_battle_start_fight before start_fight since the latter is a substring.
         if (isOut) {
             val cmd = when {
                 text.contains("event_battle_start_fight") -> "event_battle_start_fight"
@@ -76,8 +64,7 @@ object GameProtocolParser {
             }
         }
 
-        // Check clan_finish_fight before finish_fight — clan_finish_fight contains "finish_fight"
-        // as a substring so order matters to avoid misclassification.
+        // Check clan_finish_fight before finish_fight since the latter is a substring.
         val endCmdOrdered = listOf("clan_finish_fight", "event_battle_finish_fight", "brawler_finish", "finish_fight")
         for (cmd in endCmdOrdered) {
             if (text.contains(cmd)) {
@@ -89,11 +76,8 @@ object GameProtocolParser {
         return null
     }
 
-    /**
-     * From captured packets, SF3 battle IDs are 5–9 digit incrementing counters
-     * (e.g. 3001602). Values >= 1,000,000,000 are Unix-second timestamps or
-     * player/session IDs. Values < 10,000 are flags/enums.
-     */
+    // SF3 battle IDs are 5-9 digit incrementing counters (e.g. 3001602). Values
+    // >= 1,000,000,000 are timestamps/session IDs; values < 10,000 are flags/enums.
     private fun isBattleIdCandidate(v: Long): Boolean =
         v in 10_000L..999_999_999L
 
@@ -103,32 +87,18 @@ object GameProtocolParser {
             .minByOrNull { it.toLong() }
     }
 
-    // ── Counter extraction (public — used by ViewModel to track session seq) ─
-
-    /**
-     * Returns the outbound packet counter (field[1] in the SF3 envelope) from
-     * a raw framed packet, or null if the packet can't be parsed.
-     *
-     * The counter increments with every packet the client sends. Injected packets
-     * must use counter = (last seen outbound counter) + 1 so the server doesn't
-     * treat them as duplicates.
-     */
+    // The counter increments with every packet the client sends. Injected packets
+    // must use counter = (last seen outbound counter) + 1 so the server doesn't
+    // treat them as duplicates.
     fun extractCounter(data: ByteArray): Long? {
         val payload = extractPayload(data) ?: return null
         return (readProtoFields(payload)[1] as? Long)?.takeIf { it > 0 }
     }
 
-    /**
-     * If [data] is a COMPLETE outbound event_battle_finish_fight SF3 frame, returns
-     * Pair(battleId, counter) so TcpHandler can build a replacement WIN packet.
-     * Returns null for any other command, partial frame, or parse failure.
-     *
-     * This is used by the "ARM WIN" intercept path: instead of injecting mid-fight
-     * (which the game client ignores because its state machine is in "playing" mode),
-     * HAMMERSCALE waits for the game's own finish_fight, replaces it with a WIN packet
-     * using the SAME counter, so the server responds on the connection the game was
-     * already waiting on → game client processes the win and shows the WIN screen.
-     */
+    // If [data] is a complete outbound event_battle_finish_fight frame, returns
+    // Pair(battleId, counter) so TcpHandler can build a replacement WIN packet using
+    // the same counter — the server then responds on the connection the game is
+    // already waiting on, and the game client shows the win screen normally.
     fun tryExtractFinishFight(data: ByteArray): Pair<Long, Long>? {
         val payload = extractPayload(data) ?: return null
         val fields  = readProtoFields(payload)
@@ -141,10 +111,6 @@ object GameProtocolParser {
         return battleId to counter
     }
 
-    /**
-     * Returns true if [data] is a complete outbound raid_fight_finish SF3 frame.
-     * Used by the raid damage intercept in TcpHandler to identify the packet to patch.
-     */
     fun tryExtractRaidFightFinish(data: ByteArray): Boolean {
         val payload = extractPayload(data) ?: return false
         val fields  = readProtoFields(payload)
@@ -152,31 +118,18 @@ object GameProtocolParser {
         return cmd == "raid_fight_finish"
     }
 
-    /**
-     * Parses the server's inbound event_battle_start_fight response and returns the
-     * 0-indexed sub-battle sequence number from params field[3].
-     *
-     * Confirmed from captures (4-battle skeletal event):
-     *   fight_107: field[3] absent → sub-battle 0  (first fight)
-     *   fight_141: field[3] = 1   → sub-battle 1
-     *   fight_147: field[3] = 2   → sub-battle 2
-     *   fight_154: field[3] = 3   → sub-battle 3
-     *
-     * Returns null if [data] is not an inbound event_battle_start_fight or cannot be parsed.
-     * Returns 0 when field[3] is absent (first sub-battle in a sequence, or single-fight battle).
-     */
+    // Parses the server's inbound event_battle_start_fight response and returns the
+    // 0-indexed sub-battle sequence number from params field[3] (absent = 0, i.e. the
+    // first fight in a sequence). Returns null if the frame isn't a matching command
+    // or can't be parsed.
     fun extractBattleSeqFromServerStart(data: ByteArray): Int? {
         return try {
             val payload = extractPayload(data) ?: return null
             val outer   = readProtoFields(payload)
             val cmd     = (outer[2] as? ByteArray)?.toString(Charsets.UTF_8) ?: return null
             if (cmd != "event_battle_start_fight") return null
-            // field[3] (sub-battle index) is NOT directly in outer[3] (the raw params blob).
-            // It lives at outer[3] → [2] → [1] — the battle config object confirmed from captures:
-            //   fight_107: field[3] absent → 0 (first)
-            //   fight_141: field[3] = 1   → second
-            //   fight_147: field[3] = 2   → third
-            //   fight_154: field[3] = 3   → fourth
+            // The sub-battle index lives at outer[3] -> [2] -> [1] inside the nested
+            // battle config object, not directly in the params blob.
             val params   = outer[3] as? ByteArray ?: return null
             val f3       = readProtoFields(params)
             val bigBlob  = f3[2]    as? ByteArray ?: return null
@@ -187,10 +140,6 @@ object GameProtocolParser {
         } catch (_: Exception) { null }
     }
 
-    /**
-     * Returns true if [data] is a complete outbound brawler_finish SF3 frame.
-     * Used by the brawler WIN intercept in TcpHandler to identify the packet to patch.
-     */
     fun tryExtractBrawlerFinish(data: ByteArray): Boolean {
         var pos = 0
         while (pos < data.size) {
@@ -220,11 +169,7 @@ object GameProtocolParser {
         return false
     }
 
-    /**
-     * Same as [tryExtractFinishFight] but for clan_finish_fight.
-     * Returns Pair(battleId, counter) if [data] is a complete outbound clan_finish_fight frame.
-     * The field layout is identical to event_battle_finish_fight — params.field[1] = battleId.
-     */
+    // Same as tryExtractFinishFight but for clan_finish_fight (identical field layout).
     fun tryExtractClanFinishFight(data: ByteArray): Pair<Long, Long>? {
         val payload = extractPayload(data) ?: return null
         val fields  = readProtoFields(payload)
@@ -237,20 +182,10 @@ object GameProtocolParser {
         return battleId to counter
     }
 
-    /**
-     * Parses the server's inbound clan_start_fight response frame and extracts the
-     * number of rounds for the battle.
-     *
-     * Navigation path (confirmed from hammerscale capture):
-     *   outer envelope field[3] (params)
-     *     → field[2] (big inventory/config blob)
-     *       → field[1] (battle config outer, 8575B)
-     *         → field[1] (battle config inner, 7926B)
-     *           → field[10] = rounds (varint, e.g. 2)
-     *
-     * Returns null if [data] is not a clan_start_fight server response, is not fully
-     * parseable, or if the extracted round count is outside the sane range 1–10.
-     */
+    // Parses the server's inbound clan_start_fight response and extracts the round
+    // count by walking outer[3] -> [2] -> [1] -> [1] -> field[10]. Returns null if
+    // this isn't a clan_start_fight response, isn't fully parseable, or the round
+    // count falls outside the sane range 1-10.
     fun extractClanRoundsFromStartResponse(data: ByteArray): Int? {
         return try {
             val payload = extractPayload(data) ?: return null
@@ -271,8 +206,6 @@ object GameProtocolParser {
         } catch (_: Exception) { null }
     }
 
-    // ── Framing ───────────────────────────────────────────────────────────
-
     fun extractPayload(data: ByteArray): ByteArray? {
         return when (data[0].toInt() and 0xFF) {
             0x01 -> {
@@ -290,8 +223,6 @@ object GameProtocolParser {
             else -> null
         }
     }
-
-    // ── Envelope dispatch ─────────────────────────────────────────────────
 
     private fun parseEnvelope(proto: ByteArray, dir: LiveMessage.Direction): GameEvent? {
         val fields  = readProtoFields(proto)
@@ -325,24 +256,18 @@ object GameProtocolParser {
             command == "LOGIN" && !isOut -> GameEvent.LoginIn()
 
             command in BATTLE_START_COMMANDS && isOut -> {
-                // Battle ID is always params.field[1] varint in outbound packets.
-                // The server echoes the same command name but with completely different
-                // params (field[1] = 60926, a session/room ID, not the battle counter).
-                // Pass commandName through so the ViewModel can apply priority logic:
-                // event_battle_start_fight (hero fight) always overrides currentBattle;
-                // start_fight (clan/brawler) only sets if currentBattle is null.
+                // The server echoes the same command name with different params
+                // (a session/room ID rather than the battle counter). commandName is
+                // passed through so the ViewModel can prioritize hero fights over clan/brawler.
                 val battleId = params?.let { extractBattleIdDirect(it) } ?: "?"
                 GameEvent.BattleStarted(battleId, command)
             }
 
             command in BATTLE_START_COMMANDS && !isOut -> {
-                // Server echo of event_battle_start_fight / start_fight.
-                // Parse params to extract the sub-battle sequence index (field[3])
-                // and any other interesting fields so they appear in the dev log.
                 val detail = buildString {
                     if (params != null) {
                         try {
-                            // Navigate to the battle config object: params[2][1]
+                            // Battle config object lives at params[2][1]
                             val f3      = readProtoFields(params)
                             val bigBlob = f3[2] as? ByteArray
                             val bc      = bigBlob?.let { readProtoFields(it)[1] as? ByteArray }
@@ -352,9 +277,8 @@ object GameProtocolParser {
                             append("seq=${seq ?: 0}")
                             if (seq == null) append("  (field[3] absent → first fight)")
                             else             append("  (fight ${seq + 1})")
-                            // Dump scalar fields from the battle config for debugging
                             bcFields.forEach { (fn, v) ->
-                                if (fn == 3) return@forEach   // already shown as seq
+                                if (fn == 3) return@forEach
                                 when (v) {
                                     is Long      -> append("\nfield[$fn]=$v")
                                     is ByteArray -> {
@@ -386,21 +310,14 @@ object GameProtocolParser {
             }
 
             command in BATTLE_END_COMMANDS && !isOut -> {
-                // Server confirmed the battle ended.
-                // IMPORTANT: for event_battle_finish_fight the server's params.field[1] is
-                // its own sequential fight counter (e.g. 61028), NOT the client's battle
-                // template ID (e.g. 3001602). Reading it with extractBattleIdDirect would
-                // produce a WinConfirmed ID that never matches currentBattle → stuck state.
-                // Use "?" (wildcard) for hero-fight confirmations so the ViewModel always
-                // clears regardless of ID. For other end commands (finish_fight clan etc.)
-                // the server does echo back the client's battle ID in field[1], so match normally.
+                // For event_battle_finish_fight the server's params.field[1] is its own
+                // sequential fight counter, not the client's battle template ID, so we use
+                // "?" as a wildcard to always clear currentBattle. Other end commands echo
+                // back the client's battle ID and match normally.
                 //
-                // ERROR GUARD: If params is null the server returned an error envelope
-                // (field[4]=error_code, field[5]=error_string) — NOT a real win.
-                // Emitting WinConfirmed for error responses is a false positive that shows
-                // "WIN CONFIRMED" in the overlay even when the server rejected the request.
-                // In that case emit BattleCommand so the error is visible in the events log
-                // without triggering the "WIN CONFIRMED" UI state.
+                // A null params here means the server returned an error envelope rather
+                // than a real win — emit BattleCommand instead so it shows up as an error
+                // in the log without falsely triggering "WIN CONFIRMED".
                 if (command == "event_battle_finish_fight" && params == null) {
                     return GameEvent.BattleCommand(command, null, false)
                 }
@@ -418,25 +335,10 @@ object GameProtocolParser {
         }
     }
 
-    // ── Brawler finish extraction ─────────────────────────────────────────
-
-    /**
-     * Parses an outbound brawler_finish params blob and returns a [GameEvent.BrawlerFinished].
-     *
-     * brawler_finish inner proto (confirmed from captured win + loss packets):
-     *   field[1] bytes  = match info (opponent name/ID, round health events) — NOT a battle ID
-     *   field[2] varint = result  1=WIN  3=LOSS
-     *   field[3] varint = wonRounds   (2 on WIN / 1 on LOSS even when 0 rounds won)
-     *   field[4] bytes  = round outcome entries (repeated; only present on WIN)
-     *   field[5] varint = totalRounds (2 on WIN / absent on LOSS → defaults to 0)
-     *   field[6] bytes  = equipped items (full on WIN / empty on LOSS)
-     *   field[7] bytes  = fight stats   (54 bytes on WIN / 2 garbage bytes on LOSS)
-     *
-     * Frame type note: WIN is 0x02 (compressed, ~388B), LOSS is 0x01 (plain, ~189B).
-     * The canonical check is field[2] in the inner proto, not the frame byte.
-     *
-     * Falls back to [GameEvent.BattleCommand] if params are null or unparseable.
-     */
+    // brawler_finish inner proto: field[1]=match info, field[2]=result (1=WIN, 3=LOSS),
+    // field[3]=wonRounds, field[4]=round outcome entries (WIN only), field[5]=totalRounds,
+    // field[6]=equipped items, field[7]=fight stats. The frame byte (0x01/0x02) isn't a
+    // reliable WIN/LOSS signal — field[2] in the inner proto is the canonical check.
     private fun parseBrawlerFinish(params: ByteArray?): GameEvent {
         if (params == null) return GameEvent.BattleCommand("brawler_finish", null, true)
         return try {
@@ -454,8 +356,6 @@ object GameProtocolParser {
             GameEvent.BattleCommand("brawler_finish", null, true)
         }
     }
-
-    // ── Login extraction ──────────────────────────────────────────────────
 
     private fun extractLoginCredentials(params: ByteArray?): Pair<String, String> {
         if (params == null) return "?" to "?"
@@ -479,21 +379,12 @@ object GameProtocolParser {
         return guid to pass
     }
 
-    // ── Battle ID extraction ───────────────────────────────────────────────
-
-    /**
-     * Direct extraction: battle ID is always params.field[1] varint.
-     * Confirmed from captured outbound event_battle_start_fight and
-     * event_battle_finish_fight packets — no heuristics needed.
-     */
     private fun extractBattleIdDirect(params: ByteArray): String? {
         return try {
             val v = readProtoFields(params)[1]
             if (v is Long && isBattleIdCandidate(v)) v.toString() else null
         } catch (_: Exception) { null }
     }
-
-    // ── Minimal protobuf reader ───────────────────────────────────────────
 
     fun readProtoFields(data: ByteArray): Map<Int, Any> {
         val result = LinkedHashMap<Int, Any>()
@@ -539,30 +430,22 @@ object GameProtocolParser {
         return null
     }
 
-    // ── Raw deflate ───────────────────────────────────────────────────────
-
     private fun rawDeflate(data: ByteArray): ByteArray? = try {
         val inflater = Inflater(true)
         inflater.setInput(data)
         val out = java.io.ByteArrayOutputStream(data.size * 3)
         val buf = ByteArray(8192)
-        // Loop until the stream is fully decompressed.
-        // The old condition `!finished() && !needsInput()` exited prematurely
-        // when the inflater's internal output buffer was full but not yet drained,
-        // causing partial decompression of large packets (e.g. the 33 KB finish_fight
-        // server response).  The correct idiom is to keep calling inflate() until
-        // finished() is true; needsInput() only becomes true if we supplied incomplete
-        // compressed data, which should never happen after the stream reassembly fix.
+        // Keep calling inflate() until finished() is true — checking needsInput()
+        // as an exit condition too early cuts off large packets (e.g. the 33 KB
+        // finish_fight server response) before the output buffer is fully drained.
         while (!inflater.finished()) {
             val n = inflater.inflate(buf)
             if (n > 0) out.write(buf, 0, n)
-            else if (inflater.needsInput()) break  // incomplete input — stop gracefully
+            else if (inflater.needsInput()) break
         }
         inflater.end()
         out.toByteArray().takeIf { it.isNotEmpty() }
     } catch (_: Exception) { null }
-
-    // ── JSON helper ───────────────────────────────────────────────────────
 
     private fun extractJsonValue(json: String, key: String): String? =
         Regex(""""$key"\s*:\s*"([^"]+)"""").find(json)?.groupValues?.get(1)
