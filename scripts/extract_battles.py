@@ -329,18 +329,23 @@ def _parse_direct(text: str) -> list:
     return results
 
 
+def _normalize_intro_key(k: str) -> str:
+    k = re.sub(r'([a-z])([A-Z])', r'\1_\2', k).lower()
+    k = re.sub(r'([a-zA-Z])(\d)', r'\1_\2', k)
+    return k
+
+
 def _parse_skin_intro(skin_text: str, intro_text: str) -> list:
-    # From intro_battles file: intro_KEY -> rounds (3000-char forward window)
     key_rounds = {}
-    for m in re.finditer(r'(intro_\w+)\s*:', intro_text):
-        key = m.group(1)
+    for m in re.finditer(r'\b(intro\w+)\s*:\s*\{', intro_text):
+        key = _normalize_intro_key(m.group(1))
         if key in key_rounds:
             continue
         snippet = intro_text[m.start():m.start() + 3000]
         rm = re.search(r'RoundsToWin\s*:\s*(\d+)', snippet)
         if rm:
             key_rounds[key] = int(rm.group(1))
-    # From skin file: intro_KEY -> literal battle ID
+    key_rounds.setdefault('intro_last', 1)
     key_id = {}
     for m in re.finditer(
             r'(intro_\w+)\s*:\s*prepareArchBattle\s*\([^{]+\{[^}]*ID\s*:\s*(\d{5,})',
