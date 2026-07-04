@@ -25,4 +25,4 @@ CI (`.github/workflows/build.yml`) builds a release APK on every push and upload
 
 ## Disclaimer
 
-Till the time of writing, Its completely safe :D
+Till the time of writing; it's completely safe :D
