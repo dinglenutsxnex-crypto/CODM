@@ -391,3 +391,4 @@ object GameProtocolParser {
     private fun extractJsonValue(json: String, key: String): String? =
         Regex(""""$key"\s*:\s*"([^"]+)"""").find(json)?.groupValues?.get(1)
 }
+//skibidi
