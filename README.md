@@ -1,6 +1,13 @@
 # HammerScale
 
 Vpn based hack for sf3 
+![Screenshot](https://raw.githubusercontent.com/dinglenutsxnex-crypto/THE/refs/heads/main/Readme_assets/Screenshot_20260703_224916_Shadow%20Fight%203.jpg)
+
+
+
+
+
+![Demo](https://raw.githubusercontent.com/dinglenutsxnex-crypto/THE/refs/heads/main/Readme_assets/ezgif-5cf29e9e8489a9e9.gif)
 
 ## How it works
 
