@@ -85,10 +85,13 @@ object LogDownloader {
                     put(MediaStore.Downloads.IS_PENDING, 1)
                 }
                 val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: return file.copyTo(File(
-                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                        fileName
-                    ))
+                    ?: run {
+                        file.copyTo(File(
+                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                            fileName
+                        ), overwrite = true)
+                        return@try true
+                    }
                 context.contentResolver.openOutputStream(uri)?.use { out ->
                     file.inputStream().use { it.copyTo(out) }
                 }
