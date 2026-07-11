@@ -129,8 +129,8 @@ class OverlayService : Service() {
         val panelUser  = view.findViewById<View>(R.id.panel_user_mode)
         val panelEvents = view.findViewById<View>(R.id.panel_events)
         val tabRow     = view.findViewById<View>(R.id.layout_tab_row)
-        val statusBar  = view.findViewById<View>(R.id.tv_status_bar)
-        val eventCount = view.findViewById<View>(R.id.tv_event_count)
+            val statusBar  = view.findViewById<TextView>(R.id.tv_status_bar)
+            val eventCount = view.findViewById<TextView>(R.id.tv_event_count)
         val menuDevItems = view.findViewById<View>(R.id.panel_menu_dev_items)
         val modeToggleTv = view.findViewById<TextView>(R.id.menu_mode_toggle)
 
