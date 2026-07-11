@@ -76,7 +76,7 @@ object LogDownloader {
     }
 
     private fun saveToDownloads(context: Context, file: File, fileName: String): Boolean {
-        return try {
+        try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, fileName)
@@ -85,27 +85,27 @@ object LogDownloader {
                     put(MediaStore.Downloads.IS_PENDING, 1)
                 }
                 val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: run {
-                        file.copyTo(File(
-                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                            fileName
-                        ), overwrite = true)
-                        return@try true
+                if (uri != null) {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        file.inputStream().use { it.copyTo(out) }
                     }
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    file.inputStream().use { it.copyTo(out) }
+                    values.clear()
+                    values.put(MediaStore.Downloads.IS_PENDING, 0)
+                    context.contentResolver.update(uri, values, null, null)
+                } else {
+                    val fallback = File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                        fileName
+                    )
+                    file.copyTo(fallback, overwrite = true)
                 }
-                values.clear()
-                values.put(MediaStore.Downloads.IS_PENDING, 0)
-                context.contentResolver.update(uri, values, null, null)
-                true
             } else {
                 val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 file.copyTo(File(downloadsDir, fileName), overwrite = true)
-                true
             }
+            return true
         } catch (e: Exception) {
-            false
+            return false
         }
     }
 
