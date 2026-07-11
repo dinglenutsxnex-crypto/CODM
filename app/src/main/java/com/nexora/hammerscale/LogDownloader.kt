@@ -4,54 +4,59 @@ import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import com.nexora.hammerscale.model.ConnectionEntry
 import com.nexora.hammerscale.model.LiveMessage
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.*
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 object LogDownloader {
 
-    fun downloadAndShare(context: Context, messages: List<LiveMessage>) {
-        if (messages.isEmpty()) {
+    fun downloadAndShare(context: Context, connections: List<ConnectionEntry>) {
+        val totalMessages = connections.sumOf { synchronized(it.messages) { it.messages.size } }
+        if (totalMessages == 0) {
             Toast.makeText(context, "No messages to export", Toast.LENGTH_SHORT).show()
             return
         }
 
         try {
-            data class Group(val dir: LiveMessage.Direction, val packets: MutableList<Pair<ByteArray, String>>)
-            val groups = mutableListOf<Group>()
-            for (msg in messages) {
-                val cmdTag = msg.filenameTag
-                if (groups.isEmpty() || groups.last().dir != msg.direction) {
-                    groups.add(Group(msg.direction, mutableListOf(msg.data.clone() to cmdTag)))
-                } else {
-                    groups.last().packets.add(msg.data.clone() to cmdTag)
-                }
-            }
-
             val logsDir = File(context.cacheDir, "logs").also { it.mkdirs() }
             val ts = System.currentTimeMillis()
-            val zipFile = File(logsDir, "hammerscale_$ts.zip")
-
-            var userIdx   = 0
-            var serverIdx = 0
+            val dateStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date(ts))
+            val zipFile = File(logsDir, "packetcap_$dateStr.zip")
 
             ZipOutputStream(zipFile.outputStream().buffered()).use { zos ->
-                for (group in groups) {
-                    val dirName = if (group.dir == LiveMessage.Direction.OUTBOUND) "user" else "server"
-                    val n = if (group.dir == LiveMessage.Direction.OUTBOUND) ++userIdx else ++serverIdx
+                for (conn in connections) {
+                    val msgs = synchronized(conn.messages) { conn.messages.toList() }
+                    if (msgs.isEmpty()) continue
 
-                    if (group.packets.size == 1) {
-                        val (_, cmdTag) = group.packets[0]
-                        zos.putNextEntry(ZipEntry("${dirName}_${cmdTag}_${n}.bin"))
-                        zos.write(group.packets[0].first)
+                    val connLabel = sanitizeFolderName("${conn.displayAddress}_${conn.protocol}")
+
+                    zos.putNextEntry(ZipEntry("$connLabel/info.txt"))
+                    val info = buildString {
+                        appendLine("Connection: ${conn.id}")
+                        appendLine("Protocol: ${conn.protocol}")
+                        appendLine("Source Port: ${conn.srcPort}")
+                        appendLine("Destination: ${conn.displayAddress}")
+                        appendLine("Status: ${conn.status}")
+                        appendLine("Start Time: ${conn.startTimeStr}")
+                        appendLine("Bytes Out: ${conn.bytesOut}")
+                        appendLine("Bytes In: ${conn.bytesIn}")
+                        appendLine("Total Packets: ${msgs.size}")
+                    }
+                    zos.write(info.toByteArray(Charsets.UTF_8))
+                    zos.closeEntry()
+
+                    val timeFmt = SimpleDateFormat("HHmmssSSS", Locale.getDefault())
+                    msgs.sortedBy { it.timestamp }.forEachIndexed { idx, msg ->
+                        val dir = if (msg.direction == LiveMessage.Direction.OUTBOUND) "outbound" else "inbound"
+                        val timeStr = timeFmt.format(Date(msg.timestamp))
+                        val filename = "$connLabel/$dir/${timeStr}_${idx}.bin"
+                        zos.putNextEntry(ZipEntry(filename))
+                        zos.write(msg.data)
                         zos.closeEntry()
-                    } else {
-                        group.packets.forEachIndexed { i, (data, cmdTag) ->
-                            zos.putNextEntry(ZipEntry("${dirName}_${cmdTag}_${n}.${i + 1}.bin"))
-                            zos.write(data)
-                            zos.closeEntry()
-                        }
                     }
                 }
             }
@@ -64,7 +69,7 @@ object LogDownloader {
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "application/zip"
                 putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "HAMMERSCALE logs")
+                putExtra(Intent.EXTRA_SUBJECT, "Packet Capture Logs")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
@@ -77,5 +82,9 @@ object LogDownloader {
         } catch (e: Exception) {
             Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
+    }
+
+    private fun sanitizeFolderName(name: String): String {
+        return name.replace(Regex("""[<>:"/\\|?*]"""), "_").take(128)
     }
 }

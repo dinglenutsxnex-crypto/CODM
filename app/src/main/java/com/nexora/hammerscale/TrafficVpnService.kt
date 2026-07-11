@@ -9,7 +9,6 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.nexora.hammerscale.model.*
 import com.nexora.hammerscale.net.*
@@ -22,7 +21,7 @@ class TrafficVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.nexora.hammerscale.START_VPN"
         const val ACTION_STOP  = "com.nexora.hammerscale.STOP_VPN"
-        const val TARGET_PACKAGE = "com.nekki.shadowfight3"
+        const val TARGET_PACKAGE = "com.activision.callofduty.shooter"
         const val CHANNEL_ID = "hammerscale_vpn"
         const val NOTIF_ID = 1001
         const val VPN_ADDRESS = "10.0.0.1"
@@ -56,7 +55,7 @@ class TrafficVpnService : VpnService() {
     private fun startVpn() {
         try {
             val builder = Builder()
-                .setSession("HAMMERSCALE")
+                .setSession("PACKETCAP")
                 .addAddress(VPN_ADDRESS, 24)
                 .addRoute(VPN_ROUTE, 0)
                 .addDnsServer("8.8.8.8")
@@ -78,10 +77,7 @@ class TrafficVpnService : VpnService() {
                 onMessage = { id, msg -> viewModel.addMessage(id, msg) },
                 onStatusChange = { id, status ->
                     viewModel.updateConnectionStatus(id, status)
-                },
-                onWebSocket = { id -> viewModel.markAsWebSocket(id) },
-                onClanRounds = { rounds -> viewModel.setClanRounds(rounds) },
-                onBattleSeq = { seq -> viewModel.setBattleSeq(seq) }
+                }
             )
 
             udpHandler = UdpHandler(
@@ -103,14 +99,13 @@ class TrafficVpnService : VpnService() {
                 startForeground(NOTIF_ID, buildNotification())
             }
         } catch (e: Exception) {
-            Log.e("TrafficVpnService", "Failed to start VPN", e)
             stopVpn()
         }
     }
 
     private suspend fun captureLoop(fd: java.io.FileDescriptor) {
         val input = FileInputStream(fd)
-        val buf = ByteBuffer.allocate(32767)
+        val buf = ByteBuffer.allocate(65535)
 
         while (currentCoroutineContext().isActive) {
             try {
@@ -133,63 +128,6 @@ class TrafficVpnService : VpnService() {
             }
         }
     }
-
-    fun injectToGameSocket(data: ByteArray) {
-        injectToGameSocketDiag(data)
-    }
-
-    fun injectDirect(data: ByteArray): String {
-        val handler = tcpHandler ?: return "FAIL: tcpHandler is null (VPN not running)"
-        val vm = AppState.viewModel
-        val battleId    = vm.battleSocketId.value
-        val handshakeId = vm.gameSocketId.value
-        return when {
-            battleId != null -> {
-                val r = handler.injectDirect(battleId, data)
-                "battleSocket …${battleId.takeLast(16)}: $r"
-            }
-            handshakeId != null -> {
-                val r = handler.injectDirect(handshakeId, data)
-                "gameSocket …${handshakeId.takeLast(16)}: $r"
-            }
-            else -> handler.injectDirectToAny(data)
-        }
-    }
-
-    fun injectToGameSocketDiag(data: ByteArray): String? {
-        val handler = tcpHandler ?: return null
-        val vm = AppState.viewModel
-        val battleId    = vm.battleSocketId.value
-        val handshakeId = vm.gameSocketId.value
-        return when {
-            battleId != null -> {
-                val r = handler.injectToServer(battleId, data)
-                "battleSocket …${battleId.takeLast(16)}: ${r ?: "handler returned null"}"
-            }
-            handshakeId != null -> {
-                val r = handler.injectToServer(handshakeId, data)
-                "gameSocket …${handshakeId.takeLast(16)}: ${r ?: "handler returned null"}"
-            }
-            else -> {
-                val r = handler.injectToAny(data)
-                "injectToAny: ${r ?: "handler returned null"}"
-            }
-        }
-    }
-
-    fun armIntercept(roundsToWin: Int = 3) {
-        tcpHandler?.armIntercept(roundsToWin)
-    }
-
-    fun disarmIntercept() {
-        tcpHandler?.disarmIntercept()
-    }
-
-    fun armRaidIntercept() { tcpHandler?.armRaidIntercept() }
-    fun disarmRaidIntercept() { tcpHandler?.disarmRaidIntercept() }
-
-    fun armBrawlerIntercept() { tcpHandler?.armBrawlerIntercept() }
-    fun disarmBrawlerIntercept() { tcpHandler?.disarmBrawlerIntercept() }
 
     fun stopVpn() {
         captureJob?.cancel()
@@ -218,10 +156,10 @@ class TrafficVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "HAMMERSCALE VPN",
+                "Packet Capture VPN",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Traffic monitoring VPN"
+                description = "Traffic capture VPN"
                 setShowBadge(false)
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -243,7 +181,7 @@ class TrafficVpnService : VpnService() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("HAMMERSCALE Active")
+            .setContentTitle("Packet Capture Active")
             .setContentText("Monitoring: $TARGET_PACKAGE")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(openIntent)

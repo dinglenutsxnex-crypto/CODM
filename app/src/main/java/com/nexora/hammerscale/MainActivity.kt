@@ -37,12 +37,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        binding.tvDiscordLink.setOnClickListener {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://discord.gg/AW9vGhVA2j")).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            })
-        }
-
         viewModel.vpnRunning.observe(this) { running ->
             binding.btnPlay.setImageResource(
                 if (running) android.R.drawable.ic_media_pause
@@ -79,10 +73,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun launchTargetApp() {
-        val intent = packageManager.getLaunchIntentForPackage(TrafficVpnService.TARGET_PACKAGE)
-        if (intent != null) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
+        try {
+            val intent = packageManager.getLaunchIntentForPackage(TrafficVpnService.TARGET_PACKAGE)
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            }
+        } catch (e: Exception) {
         }
     }
 

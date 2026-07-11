@@ -2,34 +2,32 @@ package com.nexora.hammerscale
 
 import android.app.Notification
 import android.app.NotificationChannel
-import android.app.NotificationChannelGroup
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.util.TypedValue
 import android.view.*
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import androidx.lifecycle.Observer
+import androidx.lifecycle.LiveData
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.nexora.hammerscale.model.ConnectionViewModel
-import com.nexora.hammerscale.model.GameEvent
+import com.nexora.hammerscale.model.ConnectionEntry
+import com.nexora.hammerscale.model.LiveMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class OverlayService : Service() {
 
@@ -44,467 +42,15 @@ class OverlayService : Service() {
     private var overlayView: View? = null
     private var miniView: View? = null
 
-    private val events = mutableListOf<GameEvent>()
-    private lateinit var adapter: GameEventAdapter
+    private val liveMessages = mutableListOf<LiveMessage>()
+    private lateinit var adapter: PacketAdapter
 
     private var savedX: Int = 0
     private var savedY: Int = 120
 
-    private var currentBattleId: String? = null
-    private var lastWinConfirmedId: String? = null
-
-    private var interceptIsArmed    = false
-    private var raidInterceptArmed  = false
-    private var brawlerInterceptArmed = false
-    private var brawlerBattleActive   = false
-
-    private var roundsToWin: Int = 3
-    private var autoSetBattleId: String? = null
-
-    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    private var pendingArmJob: Job? = null
-
-    private var pendingBrawlerArmJob: Job? = null
-
-    private var vmEventsCursor = 0
-
     private var isUserMode = true
 
-    private enum class BattleType { NONE, EVENT, CLAN }
-    private var activeBattleType = BattleType.NONE
-
-    private var userEventBattleEnabled = false
-    private var userClanBattleEnabled  = false
-    private var userRaidEnabled        = false
-    private var userBrawlerEnabled     = false
-
-    private val labelColorNormal = Color.parseColor("#FFE6EDF3")
-    private val labelColorActive = Color.parseColor("#FFFF4444")
-
-    private val switchOnColor  = Color.parseColor("#FF3FB950")
-    private val switchOffColor = Color.parseColor("#FF444C56")
-    private val thumbOnColor   = Color.WHITE
-    private val thumbOffColor  = Color.parseColor("#FF8B949E")
-
-    private val eventObserver = Observer<List<GameEvent>> { newList ->
-        val added = if (vmEventsCursor < newList.size) newList.drop(vmEventsCursor) else emptyList()
-        vmEventsCursor = newList.size
-
-        if (added.isNotEmpty()) {
-            val prevSize = events.size
-            events.addAll(added)
-            adapter.notifyItemRangeInserted(prevSize, added.size)
-
-            val rv = overlayView?.findViewById<RecyclerView>(R.id.rv_events)
-            if (rv != null && isAtBottom(rv)) {
-                rv.scrollToPosition(events.size - 1)
-            }
-
-            if (!isUserMode) {
-                overlayView?.findViewById<TextView>(R.id.tv_event_count)?.text = events.size.toString()
-                overlayView?.findViewById<TextView>(R.id.tv_status_bar)?.text =
-                    "${events.size} events  ·  last: ${events.last().timeStr}"
-            }
-            miniView?.findViewById<TextView>(R.id.tv_mini_count)?.apply {
-                if (!isUserMode) text = "${events.size}"
-            }
-        }
-    }
-
-    private val battleObserver = Observer<ConnectionViewModel.BattleState?> { state ->
-        currentBattleId = state?.battleId
-        updateEventsPanel()
-    }
-
-    private val clanRoundsObserver = Observer<Int?> { rounds ->
-        if (rounds == null) return@Observer
-        val prev = roundsToWin
-        roundsToWin = rounds
-        overlayView?.let { v ->
-            v.findViewById<TextView>(R.id.tv_rounds_value)?.text = rounds.toString()
-            v.findViewById<TextView>(R.id.tv_rounds_label)?.let { label ->
-                label.text = "max rounds  "
-                label.setTextColor(Color.parseColor("#FF58A6FF"))
-            }
-        }
-        autoSetBattleId = currentBattleId
-        if (interceptIsArmed) {
-            TrafficVpnService.instance?.armIntercept(roundsToWin)
-            Toast.makeText(this, "Clan rounds: $rounds (was $prev) — intercept updated", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(this, "Clan rounds from server: $rounds", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private val battleSeqObserver = Observer<Int?> { seq ->
-        if (seq == null) return@Observer
-        val id = currentBattleId ?: return@Observer
-
-        if (!BattleConfig.isMultiFight(id)) return@Observer
-
-        val roundsForThisFight = BattleConfig.roundsFor(id, seq) ?: return@Observer
-        val totalFights        = BattleConfig.totalFightsFor(id)
-
-        roundsToWin = roundsForThisFight
-        if (interceptIsArmed) {
-            TrafficVpnService.instance?.armIntercept(roundsToWin)
-        }
-
-        overlayView?.let { v ->
-            v.findViewById<TextView>(R.id.tv_rounds_value)?.text = roundsForThisFight.toString()
-            v.findViewById<TextView>(R.id.tv_rounds_label)?.let { label ->
-                label.text = "rounds · fight ${seq + 1}/$totalFights  "
-                label.setTextColor(Color.parseColor("#FF58A6FF"))
-            }
-        }
-    }
-
-    private val raidFightObserver = Observer<Boolean> { active ->
-        val wasArmed = raidInterceptArmed
-        updateRaidPanel(active)
-        updateUserModeRaidLabel(active)
-        if (active && userRaidEnabled) {
-            armRaid()
-        } else if (!active && wasArmed && isUserMode) {
-            flashLabelGreen(R.id.tv_label_raid)
-        }
-    }
-
-    private val gameEventsForTypeObserver = Observer<List<GameEvent>> { list ->
-        val last = list.lastOrNull()
-        when (last) {
-            is GameEvent.BattleStarted -> {
-                activeBattleType = if (last.commandName == "event_battle_start_fight")
-                    BattleType.EVENT else BattleType.CLAN
-                updateUserModeBattleLabels()
-
-                val shouldArm = (activeBattleType == BattleType.EVENT && userEventBattleEnabled) ||
-                                (activeBattleType == BattleType.CLAN  && userClanBattleEnabled)
-                if (shouldArm) {
-                    pendingArmJob?.cancel()
-                    pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                        delay(3_000)
-                        armBattleIntercept()
-                    }
-                }
-            }
-            is GameEvent.WinConfirmed -> {
-                val typeWon = activeBattleType
-                pendingArmJob?.cancel()
-                pendingArmJob = null
-                activeBattleType = BattleType.NONE
-                disarmBattleIntercept()
-                updateUserModeBattleLabels()
-                if (isUserMode) {
-                    when (typeWon) {
-                        BattleType.EVENT -> flashLabelGreen(R.id.tv_label_event_battle)
-                        BattleType.CLAN  -> flashLabelGreen(R.id.tv_label_clan_battle)
-                        else             -> {}
-                    }
-                }
-            }
-            is GameEvent.BrawlerFinished -> {
-                val wasWin = last.result == "WIN"
-                pendingBrawlerArmJob?.cancel()
-                pendingBrawlerArmJob = null
-                brawlerBattleActive = false
-                disarmBrawlerIntercept()
-                updateBrawlerPanel()
-                updateUserModeBrawlerLabel()
-                if (isUserMode && userBrawlerEnabled && wasWin) flashLabelGreen(R.id.tv_label_brawler)
-            }
-            is GameEvent.BattleCommand -> {
-                if (last.name in setOf("finish_fight", "event_battle_finish_fight", "clan_finish_fight")) {
-                    pendingArmJob?.cancel()
-                    pendingArmJob = null
-                    activeBattleType = BattleType.NONE
-                    disarmBattleIntercept()
-                    updateUserModeBattleLabels()
-                }
-                if (last.name == "brawler_start" && last.isOutbound) {
-                    android.util.Log.d("HammerBrawler", "brawler_start OUTBOUND: userBrawlerEnabled=$userBrawlerEnabled brawlerBattleActive=$brawlerBattleActive")
-                    brawlerBattleActive = true
-                    updateBrawlerPanel()
-                    updateUserModeBrawlerLabel()
-                    if (userBrawlerEnabled) {
-                        pendingBrawlerArmJob?.cancel()
-                        pendingBrawlerArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                            armBrawlerIntercept()
-                        }
-                    } else {
-                        android.util.Log.w("HammerBrawler", "brawler_start: userBrawlerEnabled=FALSE — intercept NOT armed")
-                    }
-                }
-                if (last.name == "brawler_finish" && last.isOutbound) {
-                    pendingBrawlerArmJob?.cancel()
-                    pendingBrawlerArmJob = null
-                    brawlerBattleActive = false
-                    disarmBrawlerIntercept()
-                    updateBrawlerPanel()
-                    updateUserModeBrawlerLabel()
-                }
-            }
-            else -> {}
-        }
-    }
-
-    private val winObserver = Observer<List<GameEvent>> { list ->
-        val last = list.lastOrNull()
-        if (last is GameEvent.WinConfirmed) {
-            lastWinConfirmedId = last.battleId
-            updateEventsPanel()
-        }
-    }
-
-    private fun isAtBottom(rv: RecyclerView): Boolean {
-        val lm = rv.layoutManager as? LinearLayoutManager ?: return true
-        val last = lm.findLastVisibleItemPosition()
-        return last >= adapter.itemCount - 2
-    }
-
-    private fun updateUserModeBattleLabels() {
-        val v = overlayView ?: return
-        val tvEvent = v.findViewById<TextView>(R.id.tv_label_event_battle) ?: return
-        val tvClan  = v.findViewById<TextView>(R.id.tv_label_clan_battle)  ?: return
-        tvEvent.setTextColor(if (activeBattleType == BattleType.EVENT) labelColorActive else labelColorNormal)
-        tvClan.setTextColor(if (activeBattleType == BattleType.CLAN)  labelColorActive else labelColorNormal)
-    }
-
-    private fun updateUserModeRaidLabel(raidActive: Boolean) {
-        val v = overlayView ?: return
-        val tvRaid = v.findViewById<TextView>(R.id.tv_label_raid) ?: return
-        tvRaid.setTextColor(if (raidActive) labelColorActive else labelColorNormal)
-    }
-
-    private fun updateUserModeBrawlerLabel() {
-        val tv = overlayView?.findViewById<TextView>(R.id.tv_label_brawler) ?: return
-        tv.setTextColor(if (brawlerBattleActive) labelColorActive else labelColorNormal)
-    }
-
-    private fun updateBrawlerPanel() {
-        val v         = overlayView ?: return
-        val statusTv  = v.findViewById<TextView>(R.id.tv_brawler_status)    ?: return
-        val btn       = v.findViewById<TextView>(R.id.btn_brawler_win)       ?: return
-        val armStatus = v.findViewById<TextView>(R.id.tv_brawler_arm_status) ?: return
-
-        if (!brawlerBattleActive) {
-            statusTv.text = "NO ACTIVE BRAWLER"
-            statusTv.setTextColor(Color.parseColor("#FF8B949E"))
-            btn.visibility = View.GONE
-            armStatus.visibility = View.GONE
-            return
-        }
-
-        statusTv.text = "BRAWLER FIGHT ACTIVE"
-        statusTv.setTextColor(Color.parseColor("#FF3FB950"))
-        btn.visibility = View.VISIBLE
-
-        if (brawlerInterceptArmed) {
-            btn.text = "ARMED — play to fight end"
-            btn.setTextColor(Color.parseColor("#FF0D1117"))
-            btn.setBackgroundColor(Color.parseColor("#FFD29922"))
-            armStatus.text = "brawler_finish → patched to WIN"
-            armStatus.setTextColor(Color.parseColor("#FFD29922"))
-            armStatus.visibility = View.VISIBLE
-        } else {
-            btn.text = "ARM BRAWLER WIN"
-            btn.setTextColor(Color.parseColor("#FF0D1117"))
-            btn.setBackgroundColor(Color.parseColor("#FF58A6FF"))
-            armStatus.visibility = View.GONE
-        }
-    }
-
-    private fun armBattleIntercept() {
-        if (interceptIsArmed) return
-        val vpn = TrafficVpnService.instance ?: return
-        interceptIsArmed = true
-        vpn.armIntercept(roundsToWin)
-        updateEventsPanel()
-    }
-
-    private fun disarmBattleIntercept() {
-        if (!interceptIsArmed) return
-        interceptIsArmed = false
-        TrafficVpnService.instance?.disarmIntercept()
-        updateEventsPanel()
-    }
-
-    private fun armRaid() {
-        if (raidInterceptArmed) return
-        val vpn = TrafficVpnService.instance ?: return
-        raidInterceptArmed = true
-        vpn.armRaidIntercept()
-        updateRaidPanel(true)
-    }
-
-    private fun disarmRaid() {
-        if (!raidInterceptArmed) return
-        raidInterceptArmed = false
-        TrafficVpnService.instance?.disarmRaidIntercept()
-        updateRaidPanel(AppState.viewModel.raidFightActive.value == true)
-    }
-
-    private fun armBrawlerIntercept() {
-        if (brawlerInterceptArmed) {
-            android.util.Log.d("HammerBrawler", "armBrawlerIntercept: already armed, skipping")
-            return
-        }
-        val vpn = TrafficVpnService.instance
-        if (vpn == null) {
-            android.util.Log.e("HammerBrawler", "armBrawlerIntercept: VPN instance is null — arm FAILED")
-            return
-        }
-        brawlerInterceptArmed = true
-        vpn.armBrawlerIntercept()
-        android.util.Log.d("HammerBrawler", "armBrawlerIntercept: ARMED (brawlerBattleActive=$brawlerBattleActive)")
-        updateBrawlerPanel()
-    }
-
-    private fun disarmBrawlerIntercept() {
-        if (!brawlerInterceptArmed) {
-            android.util.Log.d("HammerBrawler", "disarmBrawlerIntercept: already disarmed")
-            return
-        }
-        android.util.Log.d("HammerBrawler", "disarmBrawlerIntercept: DISARMED")
-        brawlerInterceptArmed = false
-        TrafficVpnService.instance?.disarmBrawlerIntercept()
-        updateBrawlerPanel()
-    }
-
-    private fun flashLabelGreen(labelResId: Int) {
-        val tv = overlayView?.findViewById<TextView>(labelResId) ?: return
-        tv.setTextColor(Color.parseColor("#FF3FB950"))
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            overlayView?.findViewById<TextView>(labelResId)
-                ?.setTextColor(labelColorNormal)
-        }, 2_000)
-    }
-
-    @Suppress("DEPRECATION")
-    private fun styleSwitch(sw: Switch) {
-        val states = arrayOf(
-            intArrayOf(android.R.attr.state_checked),
-            intArrayOf(-android.R.attr.state_checked)
-        )
-        sw.trackTintList = ColorStateList(states, intArrayOf(switchOnColor, switchOffColor))
-        sw.thumbTintList = ColorStateList(states, intArrayOf(thumbOnColor, thumbOffColor))
-    }
-
-    private fun updateEventsPanel() {
-        val v = overlayView ?: return
-        val statusTv  = v.findViewById<TextView>(R.id.tv_battle_status) ?: return
-        val idTv      = v.findViewById<TextView>(R.id.tv_battle_id)     ?: return
-        val winBtn    = v.findViewById<TextView>(R.id.btn_win_battle)   ?: return
-        val winStatus = v.findViewById<TextView>(R.id.tv_win_status)    ?: return
-        val rowRounds = v.findViewById<View>(R.id.row_rounds)
-
-        val id = currentBattleId
-        when {
-            id != null -> {
-                statusTv.text = "BATTLE ACTIVE"
-                statusTv.setTextColor(Color.parseColor("#FF3FB950"))
-                idTv.text = "battle_id: $id"
-                idTv.visibility = View.VISIBLE
-                winBtn.visibility = View.VISIBLE
-                rowRounds?.visibility = View.VISIBLE
-                lastWinConfirmedId = null
-
-                if (id != autoSetBattleId) {
-                    autoSetBattleId = id
-                    val autoRounds = BattleConfig.roundsFor(id)
-                    val labelTv = v.findViewById<android.widget.TextView>(R.id.tv_rounds_label)
-                    if (autoRounds != null) {
-                        roundsToWin = autoRounds
-                        if (interceptIsArmed) {
-                            TrafficVpnService.instance?.armIntercept(roundsToWin)
-                        }
-                        overlayView?.findViewById<android.widget.TextView>(R.id.tv_rounds_value)
-                            ?.text = roundsToWin.toString()
-                        labelTv?.text = "max rounds  "
-                        labelTv?.setTextColor(Color.parseColor("#FF58A6FF"))
-                        Toast.makeText(this, "Rounds auto-set: $autoRounds for $id", Toast.LENGTH_SHORT).show()
-                    } else {
-                        labelTv?.text = "ROUNDS  "
-                        labelTv?.setTextColor(Color.parseColor("#FF8B949E"))
-                        val loaded = BattleConfig.isLoaded
-                        Toast.makeText(this, "No rounds for $id (config loaded=$loaded)", Toast.LENGTH_LONG).show()
-                    }
-                }
-
-                if (interceptIsArmed) {
-                    winBtn.text = "ARMED — play to fight end"
-                    winBtn.setTextColor(Color.parseColor("#FF0D1117"))
-                    winBtn.setBackgroundColor(Color.parseColor("#FFD29922"))
-                    winStatus.text = "finish_fight will be replaced with WIN"
-                    winStatus.setTextColor(Color.parseColor("#FFD29922"))
-                    winStatus.visibility = View.VISIBLE
-                } else {
-                    winBtn.text = "ARM WIN"
-                    winBtn.setTextColor(Color.parseColor("#FF0D1117"))
-                    winBtn.setBackgroundColor(Color.parseColor("#FF3FB950"))
-                    winStatus.visibility = View.GONE
-                }
-            }
-            lastWinConfirmedId != null -> {
-                interceptIsArmed = false
-                statusTv.text = "WIN CONFIRMED"
-                statusTv.setTextColor(Color.parseColor("#FF3FB950"))
-                idTv.text = "battle_id: $lastWinConfirmedId  /  server ACK"
-                idTv.visibility = View.VISIBLE
-                winBtn.visibility = View.GONE
-                rowRounds?.visibility = View.GONE
-            }
-            else -> {
-                if (interceptIsArmed) {
-                    interceptIsArmed = false
-                    TrafficVpnService.instance?.disarmIntercept()
-                }
-                statusTv.text = "NO ACTIVE BATTLE"
-                statusTv.setTextColor(Color.parseColor("#FF8B949E"))
-                idTv.visibility = View.GONE
-                winBtn.visibility = View.GONE
-                rowRounds?.visibility = View.GONE
-            }
-        }
-    }
-
-    private fun updateRaidPanel(active: Boolean) {
-        val v         = overlayView ?: return
-        val statusTv  = v.findViewById<TextView>(R.id.tv_raid_status)    ?: return
-        val btn       = v.findViewById<TextView>(R.id.btn_raid_max_dmg)  ?: return
-        val armStatus = v.findViewById<TextView>(R.id.tv_raid_arm_status) ?: return
-
-        if (!active) {
-            if (raidInterceptArmed) {
-                raidInterceptArmed = false
-                TrafficVpnService.instance?.disarmRaidIntercept()
-            }
-            statusTv.text = "NO ACTIVE RAID"
-            statusTv.setTextColor(Color.parseColor("#FF8B949E"))
-            btn.visibility = View.GONE
-            armStatus.visibility = View.GONE
-            return
-        }
-
-        statusTv.text = "RAID FIGHT ACTIVE"
-        statusTv.setTextColor(Color.parseColor("#FF3FB950"))
-        btn.visibility = View.VISIBLE
-
-        if (raidInterceptArmed) {
-            btn.text = "ARMED — play to fight end"
-            btn.setTextColor(Color.parseColor("#FF0D1117"))
-            btn.setBackgroundColor(Color.parseColor("#FFD29922"))
-            armStatus.text = "raid_fight_finish → field[2]=1.0 (boss killed)"
-            armStatus.setTextColor(Color.parseColor("#FFD29922"))
-            armStatus.visibility = View.VISIBLE
-        } else {
-            btn.text = "ARM MAX DMG"
-            btn.setTextColor(Color.parseColor("#FF0D1117"))
-            btn.setBackgroundColor(Color.parseColor("#FFDA3633"))
-            armStatus.visibility = View.GONE
-        }
-    }
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -516,44 +62,24 @@ class OverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        
+
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
-        
-        adapter = GameEventAdapter(events)
+
+        adapter = PacketAdapter(liveMessages)
         setupOverlay()
-        AppState.viewModel.gameEvents.observeForever(eventObserver)
-        AppState.viewModel.gameEvents.observeForever(winObserver)
-        AppState.viewModel.gameEvents.observeForever(gameEventsForTypeObserver)
-        AppState.viewModel.currentBattle.observeForever(battleObserver)
-        AppState.viewModel.clanRounds.observeForever(clanRoundsObserver)
-        AppState.viewModel.battleSeq.observeForever(battleSeqObserver)
-        AppState.viewModel.raidFightActive.observeForever(raidFightObserver)
-        
-        BattleConfig.loadAsync(
-            resources,
-            onLoaded = { count, version ->
-                Toast.makeText(this, "BattleConfig OK: $count battles (v$version)", Toast.LENGTH_LONG).show()
-                autoSetBattleId = null
-                updateEventsPanel()
-            },
-            onError = { msg ->
-                Toast.makeText(this, "BattleConfig FAILED: $msg", Toast.LENGTH_LONG).show()
-            }
-        )
     }
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "HammerScale Overlay",
+            "Packet Capture Overlay",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Keeps the overlay active in the background"
+            description = "Overlay UI for packet capture"
             setShowBadge(false)
         }
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.createNotificationChannel(channel)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun createNotification(): Notification {
@@ -562,7 +88,6 @@ class OverlayService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        
         val stopIntent = Intent(this, OverlayService::class.java).apply {
             action = ACTION_STOP
         }
@@ -570,10 +95,9 @@ class OverlayService : Service() {
             this, 0, stopIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("HammerScale Active")
-            .setContentText("Tap to open · Swipe to dismiss")
+            .setContentTitle("Packet Capture Active")
+            .setContentText("Tap to open")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)
@@ -601,36 +125,63 @@ class OverlayService : Service() {
     }
 
     private fun applyMode(view: View) {
-        val tabRow      = view.findViewById<View>(R.id.layout_tab_row)
-        val rvEvents    = view.findViewById<View>(R.id.rv_events)
+        val rvEvents   = view.findViewById<View>(R.id.rv_events)
+        val panelUser  = view.findViewById<View>(R.id.panel_user_mode)
         val panelEvents = view.findViewById<View>(R.id.panel_events)
-        val panelUser   = view.findViewById<View>(R.id.panel_user_mode)
-        val statusBar   = view.findViewById<View>(R.id.tv_status_bar)
-        val eventCount  = view.findViewById<View>(R.id.tv_event_count)
+        val tabRow     = view.findViewById<View>(R.id.layout_tab_row)
+        val statusBar  = view.findViewById<View>(R.id.tv_status_bar)
+        val eventCount = view.findViewById<View>(R.id.tv_event_count)
         val menuDevItems = view.findViewById<View>(R.id.panel_menu_dev_items)
         val modeToggleTv = view.findViewById<TextView>(R.id.menu_mode_toggle)
 
         if (isUserMode) {
-            tabRow?.visibility      = View.GONE
-            rvEvents?.visibility    = View.GONE
-            panelEvents?.visibility = View.GONE
-            statusBar?.visibility   = View.GONE
-            eventCount?.visibility  = View.GONE
-            panelUser?.visibility   = View.VISIBLE
+            tabRow?.visibility       = View.GONE
+            rvEvents?.visibility     = View.GONE
+            panelEvents?.visibility  = View.GONE
+            statusBar?.visibility    = View.GONE
+            eventCount?.visibility   = View.GONE
+            panelUser?.visibility    = View.VISIBLE
             menuDevItems?.visibility = View.GONE
-            modeToggleTv?.text      = "   DEV MODE"
-            updateUserModeBattleLabels()
-            updateUserModeRaidLabel(AppState.viewModel.raidFightActive.value == true)
-            updateUserModeBrawlerLabel()
+            modeToggleTv?.text       = "   DEV MODE"
+
+            view.findViewById<TextView>(R.id.tv_label_event_battle)?.let {
+                it.text = "Launch CoD Mobile"
+                it.setTextColor(Color.parseColor("#FF58A6FF"))
+            }
+            view.findViewById<View>(R.id.row_event_battle)?.let {
+                it.visibility = View.VISIBLE
+                it.setOnClickListener { launchCodMobile() }
+            }
+            view.findViewById<View>(R.id.row_clan_battle)?.visibility = View.GONE
+            view.findViewById<View>(R.id.row_brawler)?.visibility = View.GONE
+            view.findViewById<View>(R.id.row_raid)?.visibility = View.GONE
         } else {
-            tabRow?.visibility      = View.VISIBLE
-            rvEvents?.visibility    = View.VISIBLE
-            panelEvents?.visibility = View.GONE
-            statusBar?.visibility   = View.VISIBLE
-            eventCount?.visibility  = View.VISIBLE
-            panelUser?.visibility   = View.GONE
+            tabRow?.visibility       = View.VISIBLE
+            rvEvents?.visibility     = View.VISIBLE
+            panelEvents?.visibility  = View.GONE
+            statusBar?.visibility    = View.VISIBLE
+            eventCount?.visibility   = View.VISIBLE
+            panelUser?.visibility    = View.GONE
             menuDevItems?.visibility = View.VISIBLE
-            modeToggleTv?.text      = "   USER MODE"
+            modeToggleTv?.text       = "   USER MODE"
+
+            val count = liveMessages.size
+            eventCount?.text = count.toString()
+            statusBar?.text = "$count packets  ·  last: ${liveMessages.lastOrNull()?.timeStr ?: "--"}"
+        }
+    }
+
+    private fun launchCodMobile() {
+        try {
+            val intent = packageManager.getLaunchIntentForPackage(TrafficVpnService.TARGET_PACKAGE)
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } else {
+                Toast.makeText(this, "Target app not installed", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed to launch: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -661,9 +212,8 @@ class OverlayService : Service() {
         }
 
         view.findViewById<TextView>(R.id.menu_clear).setOnClickListener {
-            val sz = events.size
-            events.clear()
-            vmEventsCursor = 0
+            val sz = liveMessages.size
+            liveMessages.clear()
             adapter.notifyItemRangeRemoved(0, sz)
             view.findViewById<TextView>(R.id.tv_event_count)?.text = "0"
             view.findViewById<TextView>(R.id.tv_status_bar)?.text = "cleared"
@@ -672,8 +222,8 @@ class OverlayService : Service() {
 
         view.findViewById<TextView>(R.id.menu_download).setOnClickListener {
             menuPanel.visibility = View.GONE
-            val msgs = AppState.viewModel.getAllMessages()
-            LogDownloader.downloadAndShare(this, msgs)
+            val conns = AppState.viewModel.connections.value ?: emptyList()
+            LogDownloader.downloadAndShare(this, conns)
         }
 
         view.findViewById<TextView>(R.id.menu_mode_toggle).setOnClickListener {
@@ -702,149 +252,53 @@ class OverlayService : Service() {
             tabEvents.setBackgroundColor(Color.parseColor("#FF0D1117"))
             tabLogs.setTextColor(Color.parseColor("#FF8B949E"))
             tabLogs.setBackgroundColor(Color.TRANSPARENT)
-            updateEventsPanel()
         }
 
-        val roundsValueTv = view.findViewById<TextView>(R.id.tv_rounds_value)
-        roundsValueTv?.text = roundsToWin.toString()
-
-        view.findViewById<TextView>(R.id.btn_rounds_dec)?.setOnClickListener {
-            if (roundsToWin > 1) { roundsToWin--; roundsValueTv?.text = roundsToWin.toString() }
-        }
-
-        view.findViewById<TextView>(R.id.btn_rounds_inc)?.setOnClickListener {
-            if (roundsToWin < 9) { roundsToWin++; roundsValueTv?.text = roundsToWin.toString() }
-        }
-
-        view.findViewById<TextView>(R.id.btn_raid_max_dmg)?.setOnClickListener {
-            if (TrafficVpnService.instance == null) {
-                view.findViewById<TextView>(R.id.tv_raid_arm_status)?.apply {
-                    text = "FAIL: VPN not running"
-                    setTextColor(Color.parseColor("#FFFF4444"))
-                    visibility = View.VISIBLE
-                }
-                return@setOnClickListener
-            }
-            if (raidInterceptArmed) disarmRaid() else armRaid()
-        }
-
-        view.findViewById<TextView>(R.id.btn_win_battle).setOnClickListener {
-            if (TrafficVpnService.instance == null) {
-                view.findViewById<TextView>(R.id.tv_win_status)?.apply {
-                    text = "FAIL: VPN not running"
-                    setTextColor(Color.parseColor("#FFFF4444"))
-                    visibility = View.VISIBLE
-                }
-                return@setOnClickListener
-            }
-            if (interceptIsArmed) disarmBattleIntercept() else armBattleIntercept()
-        }
-
-        val swEvent   = view.findViewById<Switch>(R.id.sw_event_battle)
-        val swClan    = view.findViewById<Switch>(R.id.sw_clan_battle)
-        val swRaid    = view.findViewById<Switch>(R.id.sw_raid)
-        val swBrawler = view.findViewById<Switch>(R.id.sw_brawler)
-
-        styleSwitch(swEvent)
-        styleSwitch(swClan)
-        styleSwitch(swRaid)
-        styleSwitch(swBrawler)
-
-        swEvent.isChecked   = userEventBattleEnabled
-        swClan.isChecked    = userClanBattleEnabled
-        swRaid.isChecked    = userRaidEnabled
-        swBrawler.isChecked = userBrawlerEnabled
-
-        swEvent.setOnCheckedChangeListener { _, checked ->
-            userEventBattleEnabled = checked
-            if (checked) {
-                if (activeBattleType == BattleType.EVENT) {
-                    pendingArmJob?.cancel()
-                    pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                        delay(3_000)
-                        armBattleIntercept()
-                    }
-                }
-            } else {
-                pendingArmJob?.cancel()
-                pendingArmJob = null
-                if (activeBattleType == BattleType.EVENT) disarmBattleIntercept()
-            }
-        }
-
-        swClan.setOnCheckedChangeListener { _, checked ->
-            userClanBattleEnabled = checked
-            if (checked) {
-                if (activeBattleType == BattleType.CLAN) {
-                    pendingArmJob?.cancel()
-                    pendingArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                        delay(3_000)
-                        armBattleIntercept()
-                    }
-                }
-            } else {
-                pendingArmJob?.cancel()
-                pendingArmJob = null
-                if (activeBattleType == BattleType.CLAN) disarmBattleIntercept()
-            }
-        }
-
-        swRaid.setOnCheckedChangeListener { _, checked ->
-            userRaidEnabled = checked
-            if (checked && AppState.viewModel.raidFightActive.value == true) {
-                armRaid()
-            } else if (!checked) {
-                disarmRaid()
-            }
-        }
-
-        swBrawler.setOnCheckedChangeListener { _, checked ->
-            userBrawlerEnabled = checked
-            if (checked && brawlerBattleActive) {
-                pendingBrawlerArmJob?.cancel()
-                pendingBrawlerArmJob = serviceScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                    armBrawlerIntercept()
-                }
-            } else if (!checked) {
-                pendingBrawlerArmJob?.cancel()
-                pendingBrawlerArmJob = null
-                disarmBrawlerIntercept()
-            }
-        }
-
-        view.findViewById<View>(R.id.row_event_battle)?.setOnClickListener {
-            swEvent.isChecked = !swEvent.isChecked
-        }
-        view.findViewById<View>(R.id.row_clan_battle)?.setOnClickListener {
-            swClan.isChecked = !swClan.isChecked
-        }
-        view.findViewById<View>(R.id.row_raid)?.setOnClickListener {
-            swRaid.isChecked = !swRaid.isChecked
-        }
-        view.findViewById<View>(R.id.row_brawler)?.setOnClickListener {
-            swBrawler.isChecked = !swBrawler.isChecked
-        }
-
-        view.findViewById<TextView>(R.id.btn_brawler_win)?.setOnClickListener {
-            if (TrafficVpnService.instance == null) {
-                view.findViewById<TextView>(R.id.tv_brawler_arm_status)?.apply {
-                    text = "FAIL: VPN not running"
-                    setTextColor(Color.parseColor("#FFFF4444"))
-                    visibility = View.VISIBLE
-                }
-                return@setOnClickListener
-            }
-            if (brawlerInterceptArmed) disarmBrawlerIntercept() else armBrawlerIntercept()
-        }
+        view.findViewById<View>(R.id.row_clan_battle)?.visibility = View.GONE
+        view.findViewById<View>(R.id.row_brawler)?.visibility = View.GONE
+        view.findViewById<View>(R.id.row_raid)?.visibility = View.GONE
 
         applyMode(view)
-
-        updateEventsPanel()
-
         windowManager.addView(view, params)
+
+        startPollingMessages()
+    }
+
+    private var pollingJob: Job? = null
+
+    private fun startPollingMessages() {
+        pollingJob?.cancel()
+        pollingJob = serviceScope.launch(Dispatchers.Main) {
+            while (true) {
+                delay(500)
+                val allMsgs = AppState.viewModel.getAllMessages()
+                val currentSize = liveMessages.size
+                if (allMsgs.size > currentSize) {
+                    val newMsgs = allMsgs.drop(currentSize)
+                    liveMessages.addAll(newMsgs)
+                    withContext(Dispatchers.Main) {
+                        adapter.notifyItemRangeInserted(currentSize, newMsgs.size)
+                        val rv = overlayView?.findViewById<RecyclerView>(R.id.rv_events)
+                        if (rv != null && isAtBottom(rv)) {
+                            rv.scrollToPosition(liveMessages.size - 1)
+                        }
+                        overlayView?.findViewById<TextView>(R.id.tv_event_count)?.text = liveMessages.size.toString()
+                        overlayView?.findViewById<TextView>(R.id.tv_status_bar)?.text =
+                            "${liveMessages.size} packets  ·  ${AppState.viewModel.connections.value?.count { it.isLive } ?: 0} active"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isAtBottom(rv: RecyclerView): Boolean {
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return true
+        val last = lm.findLastVisibleItemPosition()
+        return last >= adapter.itemCount - 2
     }
 
     private fun removeOverlay() {
+        pollingJob?.cancel()
         overlayView?.let { try { windowManager.removeView(it) } catch (_: Exception) {} }
         overlayView = null
     }
@@ -860,7 +314,7 @@ class OverlayService : Service() {
             miniCountTv?.visibility = View.GONE
         } else {
             miniCountTv?.visibility = View.VISIBLE
-            miniCountTv?.text = if (events.isEmpty()) "--" else "${events.size}"
+            miniCountTv?.text = if (liveMessages.isEmpty()) "--" else "${liveMessages.size}"
         }
 
         val params = makeParams(w = dp(80f), h = dp(80f))
@@ -897,7 +351,6 @@ class OverlayService : Service() {
                 else -> false
             }
         }
-
         windowManager.addView(view, params)
     }
 
@@ -939,15 +392,7 @@ class OverlayService : Service() {
     }
 
     override fun onDestroy() {
-        AppState.viewModel.gameEvents.removeObserver(eventObserver)
-        AppState.viewModel.gameEvents.removeObserver(winObserver)
-        AppState.viewModel.gameEvents.removeObserver(gameEventsForTypeObserver)
-        AppState.viewModel.currentBattle.removeObserver(battleObserver)
-        AppState.viewModel.clanRounds.removeObserver(clanRoundsObserver)
-        AppState.viewModel.battleSeq.removeObserver(battleSeqObserver)
-        AppState.viewModel.raidFightActive.removeObserver(raidFightObserver)
-        pendingArmJob?.cancel()
-        pendingBrawlerArmJob?.cancel()
+        pollingJob?.cancel()
         serviceScope.cancel()
         removeOverlay()
         removeMini()
@@ -955,14 +400,14 @@ class OverlayService : Service() {
     }
 }
 
-class GameEventAdapter(private val items: List<GameEvent>) :
-    RecyclerView.Adapter<GameEventAdapter.VH>() {
+class PacketAdapter(private val items: List<LiveMessage>) :
+    RecyclerView.Adapter<PacketAdapter.VH>() {
 
     inner class VH(v: View) : RecyclerView.ViewHolder(v) {
-        val colorBar = v.findViewById<View>(R.id.view_color_bar)
-        val label    = v.findViewById<TextView>(R.id.tv_event_label)
-        val time     = v.findViewById<TextView>(R.id.tv_event_time)
-        val detail   = v.findViewById<TextView>(R.id.tv_event_detail)
+        val dirTv: TextView = v.findViewById(R.id.tv_event_label)
+        val timeTv: TextView = v.findViewById(R.id.tv_event_time)
+        val detailTv: TextView = v.findViewById(R.id.tv_event_detail)
+        val colorBar: View = v.findViewById(R.id.view_color_bar)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
@@ -971,32 +416,19 @@ class GameEventAdapter(private val items: List<GameEvent>) :
     override fun getItemCount() = items.size
 
     override fun onBindViewHolder(h: VH, pos: Int) {
-        val ev = items[pos]
+        val msg = items[pos]
+        val dir = if (msg.direction == LiveMessage.Direction.OUTBOUND) ">>" else "<<"
+        h.dirTv.text = "$dir ${msg.data.size}B"
+        h.dirTv.setTextColor(if (msg.direction == LiveMessage.Direction.OUTBOUND)
+            Color.parseColor("#F0883E") else Color.parseColor("#58A6FF"))
+        h.timeTv.text = msg.timeStr
+        h.detailTv.text = hexPreview(msg.data)
+        h.detailTv.visibility = View.VISIBLE
+        h.colorBar.setBackgroundColor(if (msg.direction == LiveMessage.Direction.OUTBOUND)
+            Color.parseColor("#F0883E") else Color.parseColor("#58A6FF"))
+    }
 
-        val colorHex = when (ev) {
-            is GameEvent.HandshakeOut,
-            is GameEvent.HandshakeIn   -> "#58A6FF"
-            is GameEvent.LoginOut      -> "#F0883E"
-            is GameEvent.LoginIn       -> "#3FB950"
-            is GameEvent.BattleStarted   -> "#FF4444"
-            is GameEvent.WinConfirmed    -> "#3FB950"
-            is GameEvent.BrawlerFinished -> if ((ev as GameEvent.BrawlerFinished).result == "WIN") "#3FB950" else "#F85149"
-            is GameEvent.BattleCommand   -> "#D29922"
-            else                         -> "#444C56"
-        }
-        val color = Color.parseColor(colorHex)
-
-        h.colorBar.setBackgroundColor(color)
-        h.label.text = ev.label
-        h.label.setTextColor(color)
-        h.time.text  = ev.timeStr
-
-        val det = ev.detail
-        if (det.isNotEmpty()) {
-            h.detail.text = det
-            h.detail.visibility = View.VISIBLE
-        } else {
-            h.detail.visibility = View.GONE
-        }
+    private fun hexPreview(data: ByteArray): String {
+        return data.take(48).joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
     }
 }
