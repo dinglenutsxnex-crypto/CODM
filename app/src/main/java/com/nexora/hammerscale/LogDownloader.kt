@@ -1,12 +1,15 @@
 package com.nexora.hammerscale
 
+import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.widget.Toast
-import androidx.core.content.FileProvider
 import com.nexora.hammerscale.model.ConnectionEntry
 import com.nexora.hammerscale.model.LiveMessage
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.zip.ZipEntry
@@ -17,14 +20,13 @@ object LogDownloader {
     fun downloadAndShare(context: Context, connections: List<ConnectionEntry>) {
         val totalMessages = connections.sumOf { synchronized(it.messages) { it.messages.size } }
         if (totalMessages == 0) {
-            Toast.makeText(context, "No messages to export", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "No packets captured yet", Toast.LENGTH_SHORT).show()
             return
         }
 
         try {
             val logsDir = File(context.cacheDir, "logs").also { it.mkdirs() }
-            val ts = System.currentTimeMillis()
-            val dateStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date(ts))
+            val dateStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
             val zipFile = File(logsDir, "packetcap_$dateStr.zip")
 
             ZipOutputStream(zipFile.outputStream().buffered()).use { zos ->
@@ -61,26 +63,46 @@ object LogDownloader {
                 }
             }
 
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.provider",
-                zipFile
-            )
-            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                type = "application/zip"
-                putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "Packet Capture Logs")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val saved = saveToDownloads(context, zipFile, "packetcap_$dateStr.zip")
+            if (saved) {
+                Toast.makeText(context, "Saved to Downloads/packetcap_$dateStr.zip", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(context, "Failed to save - check permissions", Toast.LENGTH_LONG).show()
             }
-            context.startActivity(
-                Intent.createChooser(shareIntent, "Save logs").apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-            )
 
         } catch (e: Exception) {
             Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun saveToDownloads(context: Context, file: File, fileName: String): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(MediaStore.Downloads.MIME_TYPE, "application/zip")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: return file.copyTo(File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                        fileName
+                    ))
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    file.inputStream().use { it.copyTo(out) }
+                }
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                context.contentResolver.update(uri, values, null, null)
+                true
+            } else {
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                file.copyTo(File(downloadsDir, fileName), overwrite = true)
+                true
+            }
+        } catch (e: Exception) {
+            false
         }
     }
 
