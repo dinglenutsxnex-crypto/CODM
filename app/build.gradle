@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace 'com.nexora.hammerscale'
-    compileSdk 33
+    compileSdk 34
 
     signingConfigs {
         release {
@@ -19,7 +19,7 @@ android {
     defaultConfig {
         applicationId "com.nexora.hammerscale"
         minSdk 26
-        targetSdk 33
+        targetSdk 34
         versionCode 1
         versionName "1.0"
     }
